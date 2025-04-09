@@ -16,7 +16,7 @@ client_id = os.getenv('CLIENT_ID')
 client_secret = os.getenv('CLIENT_SECRET')
 workspace_id = os.getenv('WORKSPACE_ID')
 
-def get_security_incidents(hours=24, limit=50, title=None):
+def get_security_incidents(hours=168, limit=100, severity=None, status=None):
     try:
         print("Authenticating with Azure AD...")
         # Authentication
@@ -37,55 +37,44 @@ def get_security_incidents(hours=24, limit=50, title=None):
         query = """
         SecurityIncident
         | where TimeGenerated > ago({hours}h)
-        {title_filter}
-        | extend Comments = parse_json(Comments)
-        | extend Labels = parse_json(Labels)
-        | extend AdditionalData = parse_json(AdditionalData)
-        | extend Tasks = parse_json(Tasks)
+        {severity_filter}
+        {status_filter}
         | project
-            TenantId,
             TimeGenerated,
-            IncidentName,
             Title,
-            Description,
             Severity,
             Status,
+            IncidentNumber,
+            Description,
             Classification,
-            ClassificationComment,
             ClassificationReason,
+            ClassificationComment,
             Owner,
             ProviderName,
-            ProviderIncidentId,
             FirstActivityTime,
             LastActivityTime,
-            FirstModifiedTime,
             LastModifiedTime,
             CreatedTime,
-            ClosedTime,
-            IncidentNumber,
+            IncidentUrl,
             RelatedAnalyticRuleIds,
             AlertIds,
             BookmarkIds,
             Comments,
-            Tasks,
-            Labels,
-            IncidentUrl,
-            AdditionalData,
-            ModifiedBy,
-            SourceSystem,
-            Type
+            Labels
         | order by TimeGenerated desc
         | take {limit}
         """
 
-        # Add title filter if specified
-        title_filter = f"| where Title == \"{title}\"" if title else ""
+        # Add filters if specified
+        severity_filter = f"| where Severity == \"{severity}\"" if severity else ""
+        status_filter = f"| where Status == \"{status}\"" if status else ""
         
         # Format the query with parameters
         query = query.format(
             hours=hours,
             limit=limit,
-            title_filter=title_filter
+            severity_filter=severity_filter,
+            status_filter=status_filter
         )
 
         print(f"\nExecuting query:\n{query}\n")
@@ -118,33 +107,41 @@ def get_security_incidents(hours=24, limit=50, title=None):
                 rows = table['rows']
                 
                 for row in rows:
-                    incident = dict(zip(column_names, row))
+                    incident_entry = dict(zip(column_names, row))
                     # Format all datetime fields to be more readable and convert to local time
                     datetime_fields = [
                         'TimeGenerated',
                         'FirstActivityTime',
                         'LastActivityTime',
-                        'FirstModifiedTime',
                         'LastModifiedTime',
-                        'CreatedTime',
-                        'ClosedTime'
+                        'CreatedTime'
                     ]
                     
                     for field in datetime_fields:
-                        if field in incident and incident[field]:
+                        if field in incident_entry and incident_entry[field]:
                             try:
                                 # Parse UTC time and convert to local
-                                utc_time = datetime.fromisoformat(incident[field].replace('Z', '+00:00'))
+                                utc_time = datetime.fromisoformat(incident_entry[field].replace('Z', '+00:00'))
                                 local_time = utc_time.astimezone()
-                                incident[field + ' [UTC]'] = utc_time.strftime('%Y-%m-%d %H:%M:%S')
-                                incident[field + ' [Local]'] = local_time.strftime('%Y-%m-%d %H:%M:%S')
+                                incident_entry[field + ' [UTC]'] = utc_time.strftime('%Y-%m-%d %H:%M:%S')
+                                incident_entry[field + ' [Local]'] = local_time.strftime('%Y-%m-%d %H:%M:%S')
                             except (ValueError, AttributeError) as e:
                                 print(f"Error converting time for {field}: {e}")
-                                incident[field + ' [UTC]'] = incident[field]
-                                incident[field + ' [Local]'] = incident[field]
-                    incidents.append(incident)
+                                incident_entry[field + ' [UTC]'] = incident_entry[field]
+                                incident_entry[field + ' [Local]'] = incident_entry[field]
+                    
+                    # Parse JSON fields
+                    json_fields = ['RelatedAnalyticRuleIds', 'AlertIds', 'BookmarkIds', 'Comments', 'Labels']
+                    for field in json_fields:
+                        if field in incident_entry and incident_entry[field]:
+                            try:
+                                incident_entry[field] = json.loads(incident_entry[field])
+                            except json.JSONDecodeError:
+                                pass
+                    
+                    incidents.append(incident_entry)
             
-            print(f"Found {len(incidents)} incidents")
+            print(f"Found {len(incidents)} security incidents")
             return incidents
         else:
             print(f"Error: {response.status_code}")
@@ -162,8 +159,10 @@ def display_incidents(incidents):
 
     # Prepare data for tabulate
     table_data = []
-    for incident in incidents:
+    for i, incident in enumerate(incidents, 1):
         row = [
+            i,
+            incident.get('IncidentNumber', 'N/A'),
             incident.get('TimeGenerated [Local]', 'N/A'),
             incident.get('Title', 'N/A'),
             incident.get('Severity', 'N/A'),
@@ -173,7 +172,7 @@ def display_incidents(incidents):
         table_data.append(row)
 
     # Display the table
-    headers = ['Time (Local)', 'Title', 'Severity', 'Status', 'Owner']
+    headers = ['#', 'Incident #', 'Time (Local)', 'Title', 'Severity', 'Status', 'Owner']
     print(tabulate(table_data, headers=headers, tablefmt='grid'))
     print(f"\nTotal incidents found: {len(incidents)}")
 
@@ -188,88 +187,99 @@ def display_incidents(incidents):
             if 0 <= incident_num < len(incidents):
                 incident = incidents[incident_num]
                 print("\nIncident Details:")
-                print("=" * 50)
+                print("=" * 100)
                 
-                # Display all available fields
-                fields_to_display = [
-                    ('Time Generated (UTC)', 'TimeGenerated [UTC]'),
-                    ('Time Generated (Local)', 'TimeGenerated [Local]'),
-                    ('Incident Name', 'IncidentName'),
-                    ('Title', 'Title'),
-                    ('Description', 'Description'),
-                    ('Severity', 'Severity'),
-                    ('Status', 'Status'),
-                    ('Classification', 'Classification'),
-                    ('Classification Comment', 'ClassificationComment'),
-                    ('Classification Reason', 'ClassificationReason'),
-                    ('Owner', 'Owner'),
-                    ('Provider Name', 'ProviderName'),
-                    ('Provider Incident ID', 'ProviderIncidentId'),
-                    ('First Activity (UTC)', 'FirstActivityTime [UTC]'),
-                    ('First Activity (Local)', 'FirstActivityTime [Local]'),
-                    ('Last Activity (UTC)', 'LastActivityTime [UTC]'),
-                    ('Last Activity (Local)', 'LastActivityTime [Local]'),
-                    ('First Modified (UTC)', 'FirstModifiedTime [UTC]'),
-                    ('First Modified (Local)', 'FirstModifiedTime [Local]'),
-                    ('Last Modified (UTC)', 'LastModifiedTime [UTC]'),
-                    ('Last Modified (Local)', 'LastModifiedTime [Local]'),
-                    ('Created (UTC)', 'CreatedTime [UTC]'),
-                    ('Created (Local)', 'CreatedTime [Local]'),
-                    ('Closed (UTC)', 'ClosedTime [UTC]'),
-                    ('Closed (Local)', 'ClosedTime [Local]'),
-                    ('Incident Number', 'IncidentNumber'),
-                    ('Incident URL', 'IncidentUrl'),
-                    ('Modified By', 'ModifiedBy'),
-                    ('Source System', 'SourceSystem'),
-                    ('Type', 'Type')
-                ]
+                # Display basic incident information
+                print(f"Incident Number: {incident.get('IncidentNumber', 'N/A')}")
+                print(f"Title: {incident.get('Title', 'N/A')}")
+                print(f"Created Time: {incident.get('CreatedTime [Local]', 'N/A')}")
+                print(f"Severity: {incident.get('Severity', 'N/A')}")
+                print(f"Status: {incident.get('Status', 'N/A')}")
+                print(f"Owner: {incident.get('Owner', 'N/A')}")
+                print(f"Provider: {incident.get('ProviderName', 'N/A')}")
+                print(f"First Activity: {incident.get('FirstActivityTime [Local]', 'N/A')}")
+                print(f"Last Activity: {incident.get('LastActivityTime [Local]', 'N/A')}")
+                print(f"Last Modified: {incident.get('LastModifiedTime [Local]', 'N/A')}")
                 
-                for display_name, field_name in fields_to_display:
-                    value = incident.get(field_name, 'N/A')
-                    if value:
-                        print(f"{display_name}: {value}")
+                # Display classification information if available
+                if incident.get('Classification'):
+                    print("\nClassification Information:")
+                    print("-" * 50)
+                    print(f"Classification: {incident.get('Classification', 'N/A')}")
+                    print(f"Classification Reason: {incident.get('ClassificationReason', 'N/A')}")
+                    print(f"Classification Comment: {incident.get('ClassificationComment', 'N/A')}")
                 
-                if incident.get('Comments'):
-                    print("\nComments:")
-                    for comment in incident['Comments']:
-                        print(f"- {comment}")
+                # Display description
+                if incident.get('Description'):
+                    print("\nDescription:")
+                    print("-" * 50)
+                    print(incident.get('Description', 'N/A'))
                 
-                if incident.get('Tasks'):
-                    print("\nTasks:")
-                    for task in incident['Tasks']:
-                        print(f"- {task}")
-                
-                if incident.get('Labels'):
-                    print("\nLabels:")
-                    for label in incident['Labels']:
-                        print(f"- {label}")
-                
-                if incident.get('AlertIds'):
-                    print("\nAlert IDs:")
-                    for alert_id in incident['AlertIds']:
-                        print(f"- {alert_id}")
-                
-                if incident.get('BookmarkIds'):
-                    print("\nBookmark IDs:")
-                    for bookmark_id in incident['BookmarkIds']:
-                        print(f"- {bookmark_id}")
-                
-                if incident.get('RelatedAnalyticRuleIds'):
+                # Display related IDs
+                related_rule_ids = incident.get('RelatedAnalyticRuleIds')
+                if related_rule_ids:
                     print("\nRelated Analytic Rule IDs:")
-                    for rule_id in incident['RelatedAnalyticRuleIds']:
-                        print(f"- {rule_id}")
+                    print("-" * 50)
+                    if isinstance(related_rule_ids, list):
+                        for rule_id in related_rule_ids:
+                            print(f"- {rule_id}")
+                    else:
+                        print(related_rule_ids)
                 
-                if incident.get('AdditionalData'):
-                    print("\nAdditional Data:")
-                    for key, value in incident['AdditionalData'].items():
-                        print(f"{key}: {value}")
+                alert_ids = incident.get('AlertIds')
+                if alert_ids:
+                    print("\nRelated Alert IDs:")
+                    print("-" * 50)
+                    if isinstance(alert_ids, list):
+                        for alert_id in alert_ids:
+                            print(f"- {alert_id}")
+                    else:
+                        print(alert_ids)
                 
-                if incident.get('CustomDetails'):
-                    print("\nCustom Details:")
-                    for key, value in incident['CustomDetails'].items():
-                        print(f"{key}: {value}")
+                bookmark_ids = incident.get('BookmarkIds')
+                if bookmark_ids:
+                    print("\nBookmark IDs:")
+                    print("-" * 50)
+                    if isinstance(bookmark_ids, list):
+                        for bookmark_id in bookmark_ids:
+                            print(f"- {bookmark_id}")
+                    else:
+                        print(bookmark_ids)
                 
-                print("=" * 50)
+                # Display comments if available
+                comments = incident.get('Comments')
+                if comments:
+                    print("\nComments:")
+                    print("-" * 50)
+                    if isinstance(comments, list):
+                        for i, comment in enumerate(comments, 1):
+                            if isinstance(comment, dict):
+                                print(f"\nComment #{i}:")
+                                for k, v in comment.items():
+                                    print(f"  {k}: {v}")
+                            else:
+                                print(f"Comment #{i}: {comment}")
+                    else:
+                        print(comments)
+                
+                # Display labels if available
+                labels = incident.get('Labels')
+                if labels:
+                    print("\nLabels:")
+                    print("-" * 50)
+                    if isinstance(labels, list):
+                        for label in labels:
+                            print(f"- {label}")
+                    else:
+                        print(labels)
+                
+                # Display incident URL if available
+                if incident.get('IncidentUrl'):
+                    print("\nIncident URL:")
+                    print("-" * 50)
+                    print(incident.get('IncidentUrl'))
+                
+                print("=" * 100)
             else:
                 print("Invalid incident number. Please try again.")
         except ValueError:
@@ -283,25 +293,37 @@ def export_to_excel(incidents):
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     filename = f'security_incidents_{timestamp}.xlsx'
     
-    df = pd.DataFrame(incidents)
+    # Create a copy of incidents to modify for Excel export
+    incidents_for_export = []
+    for incident in incidents:
+        incident_copy = incident.copy()
+        
+        # Convert complex fields to strings for Excel
+        for field in ['RelatedAnalyticRuleIds', 'AlertIds', 'BookmarkIds', 'Comments', 'Labels']:
+            if field in incident_copy and isinstance(incident_copy[field], (dict, list)):
+                incident_copy[field] = json.dumps(incident_copy[field])
+        
+        incidents_for_export.append(incident_copy)
+    
+    df = pd.DataFrame(incidents_for_export)
     df.to_excel(filename, index=False)
     print(f"\nExported incidents to {filename}")
 
 if __name__ == "__main__":
     # Test different scenarios
-    print("\n1. Testing all incidents from last 7 days")
+    print("\n1. Testing all security incidents from last 24 hours")
     incidents = get_security_incidents(
-        hours=168,  # Last 7 days
+        hours=24,  # Last 24 hours
         limit=50
     )
     if incidents:
         display_incidents(incidents)
         export_to_excel(incidents)
     
-    # You can add specific incident title filter like this:
-    # print("\n2. Testing specific incident title")
-    # specific_incidents = get_security_incidents(
-    #     hours=168,
+    # You can add specific severity filter like this:
+    # print("\n2. Testing high severity incidents")
+    # high_incidents = get_security_incidents(
+    #     hours=24,
     #     limit=50,
-    #     title="Your Incident Title Here"
+    #     severity="High"
     # ) 

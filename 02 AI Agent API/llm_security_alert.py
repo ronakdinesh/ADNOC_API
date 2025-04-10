@@ -4,12 +4,251 @@ import requests
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Union
 from dotenv import load_dotenv
-
-# Import functionality from security alerts script
-from test_security_alerts import get_security_alerts, display_alerts, export_to_excel
+import pandas as pd
+from tabulate import tabulate
 
 # Load environment variables
 load_dotenv()
+
+# Get Azure authentication details from environment variables
+tenant_id = os.getenv('AZURE_TENANT_ID')
+client_id = os.getenv('AZURE_CLIENT_ID')
+client_secret = os.getenv('AZURE_CLIENT_SECRET')
+workspace_id = os.getenv('AZURE_WORKSPACE_ID')
+
+# Import adal for Azure authentication if available
+try:
+    import adal
+    adal_available = True
+except ImportError:
+    adal_available = False
+
+# Set a flag to use mock data if credentials or dependencies are missing
+use_mock_data = not all([tenant_id, client_id, client_secret, workspace_id, adal_available])
+if use_mock_data:
+    print("Warning: Missing Azure credentials or dependencies. Using mock data for demonstration.")
+
+def get_security_alerts(hours=24, limit=50, severity=None, status=None, entity=None, tactic=None, technique=None, provider=None):
+    if use_mock_data:
+        return get_mock_security_alerts(hours, limit, severity, status, entity, tactic, technique, provider)
+    
+    try:
+        # Authentication
+        authority_url = f"https://login.microsoftonline.com/{tenant_id}"
+        resource = "https://api.loganalytics.io"
+
+        context = adal.AuthenticationContext(authority_url)
+        token = context.acquire_token_with_client_credentials(
+            resource,
+            client_id,
+            client_secret
+        )
+
+        access_token = token['accessToken']
+
+        # Build KQL query with filters
+        filters = []
+        if severity:
+            filters.append(f"AlertSeverity == '{severity}'")
+        if status:
+            filters.append(f"Status == '{status}'")
+        if entity:
+            filters.append(f"Entities contains '{entity}'")
+        if tactic:
+            filters.append(f"Tactics contains '{tactic}'")
+        if technique:
+            filters.append(f"Techniques contains '{technique}'")
+        if provider:
+            filters.append(f"ProviderName == '{provider}'")
+
+        filter_string = " and ".join(filters)
+        if filter_string:
+            filter_string = f"| where {filter_string}"
+
+        query = f"""
+        SecurityAlert
+        | where TimeGenerated > ago({hours}h)
+        {filter_string}
+        | project
+            TimeGenerated,
+            AlertName,
+            AlertSeverity,
+            Status,
+            Description,
+            Entities,
+            Tactics,
+            Techniques,
+            ProviderName
+        | order by TimeGenerated desc
+        | limit {limit}
+        """
+
+        url = f"https://api.loganalytics.io/v1/workspaces/{workspace_id}/query"
+        headers = {
+            'Authorization': f'Bearer {access_token}',
+            'Content-Type': 'application/json'
+        }
+        request_body = {'query': query}
+
+        response = requests.post(url, headers=headers, json=request_body)
+        response.raise_for_status()
+
+        results = response.json()
+        return results
+
+    except Exception as e:
+        print(f"Error getting security alerts: {str(e)}")
+        return None
+
+def get_mock_security_alerts(hours=24, limit=50, severity=None, status=None, entity=None, tactic=None, technique=None, provider=None):
+    """Generate mock security alert data for demonstration purposes"""
+    
+    # Create timestamp range based on hours
+    now = datetime.now()
+    mock_alerts = []
+    
+    # Define alert severities
+    severities = ["High", "Medium", "Low", "Informational"]
+    
+    # Define possible tactics
+    all_tactics = [
+        "InitialAccess", "Execution", "Persistence", "PrivilegeEscalation", 
+        "DefenseEvasion", "CredentialAccess", "Discovery", "LateralMovement", 
+        "Collection", "Exfiltration", "CommandAndControl", "Impact"
+    ]
+    
+    # Define possible techniques
+    all_techniques = [
+        "T1566 - Phishing", "T1078 - Valid Accounts", "T1190 - Exploit Public-Facing Application",
+        "T1133 - External Remote Services", "T1053 - Scheduled Task/Job", 
+        "T1059 - Command and Scripting Interpreter", "T1098 - Account Manipulation"
+    ]
+    
+    # Define possible providers
+    providers = ["Microsoft Defender ATP", "Azure Security Center", "Azure AD Identity Protection", 
+                "Azure Advanced Threat Protection", "Microsoft Cloud App Security"]
+    
+    # Define possible statuses
+    statuses = ["New", "In Progress", "Closed"]
+    
+    # Generate mock alerts
+    alert_count = min(limit, 100)  # Cap at 100 mock alerts max
+    
+    for i in range(alert_count):
+        # Filter alerts based on parameters
+        alert_severity = severity if severity else severities[i % len(severities)]
+        alert_status = status if status else statuses[i % len(statuses)]
+        alert_provider = provider if provider else providers[i % len(providers)]
+        
+        # Generate tactics and techniques
+        current_tactics = [all_tactics[i % len(all_tactics)]]
+        current_techniques = [all_techniques[i % len(all_techniques)]]
+        
+        # Skip if filtering by tactic/technique and doesn't match
+        if tactic and tactic not in current_tactics:
+            continue
+        if technique and technique not in current_techniques:
+            continue
+        
+        # Random time within the hours range
+        hours_ago = int((i / alert_count) * hours)
+        alert_time = (now - timedelta(hours=hours_ago)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        local_time = (now - timedelta(hours=hours_ago)).strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Create the alert
+        alert = {
+            "AlertName": f"Mock Security Alert {i+1}",
+            "DisplayName": f"Mock Security Alert {i+1}",
+            "AlertSeverity": alert_severity,
+            "TimeGenerated": alert_time,
+            "TimeGenerated [Local]": local_time,
+            "Status": alert_status,
+            "ProviderName": alert_provider,
+            "Description": f"This is a mock security alert for demonstration purposes. Severity: {alert_severity}, Provider: {alert_provider}",
+            "Tactics": current_tactics,
+            "Techniques": current_techniques,
+            "Entities": [{"Type": "Account", "Name": f"user{i}@example.com"}]
+        }
+        
+        mock_alerts.append(alert)
+    
+    # Create mock response structure similar to what the API would return
+    column_names = ["TimeGenerated", "TimeGenerated [Local]", "AlertName", "DisplayName", "AlertSeverity", 
+                    "Status", "Description", "Entities", "Tactics", "Techniques", "ProviderName"]
+    
+    result = {
+        "tables": [{
+            "name": "SecurityAlerts",
+            "columns": [{"name": col, "type": "string"} for col in column_names],
+            "rows": []
+        }]
+    }
+    
+    # Format rows for the mock response
+    for alert in mock_alerts:
+        row = [
+            alert.get("TimeGenerated", ""),
+            alert.get("TimeGenerated [Local]", ""),
+            alert.get("AlertName", ""),
+            alert.get("DisplayName", ""),
+            alert.get("AlertSeverity", ""),
+            alert.get("Status", ""),
+            alert.get("Description", ""),
+            json.dumps(alert.get("Entities", [])),
+            json.dumps(alert.get("Tactics", [])),
+            json.dumps(alert.get("Techniques", [])),
+            alert.get("ProviderName", "")
+        ]
+        result["tables"][0]["rows"].append(row)
+    
+    return result
+
+def display_alerts(alerts_data, format='table'):
+    if not alerts_data or 'tables' not in alerts_data:
+        print("No alert data to display")
+        return
+
+    table = alerts_data['tables'][0]
+    column_names = [col['name'] for col in table['columns']]
+    rows = table['rows']
+
+    if format == 'table':
+        # Create list of dictionaries for tabulate
+        table_data = []
+        for row in rows:
+            row_dict = dict(zip(column_names, row))
+            # Truncate long fields
+            if 'Description' in row_dict:
+                row_dict['Description'] = row_dict['Description'][:100] + '...'
+            if 'Entities' in row_dict:
+                row_dict['Entities'] = str(row_dict['Entities'])[:50] + '...'
+            table_data.append(row_dict)
+        
+        print(tabulate(table_data, headers="keys", tablefmt="grid"))
+    
+    elif format == 'detailed':
+        for row in rows:
+            row_dict = dict(zip(column_names, row))
+            print("\n" + "="*80)
+            for key, value in row_dict.items():
+                print(f"{key}:")
+                print(f"{value}\n")
+
+def export_to_excel(alerts_data, filename="security_alerts.xlsx"):
+    if not alerts_data or 'tables' not in alerts_data:
+        print("No alert data to export")
+        return
+
+    table = alerts_data['tables'][0]
+    column_names = [col['name'] for col in table['columns']]
+    rows = table['rows']
+
+    # Convert to pandas DataFrame
+    df = pd.DataFrame(rows, columns=column_names)
+    
+    # Export to Excel
+    df.to_excel(filename, index=False)
+    print(f"Alerts exported to {filename}")
 
 # Ollama configuration
 OLLAMA_API_BASE = "http://localhost:11434/v1"

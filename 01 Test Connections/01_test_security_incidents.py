@@ -16,7 +16,7 @@ client_id = os.getenv('CLIENT_ID')
 client_secret = os.getenv('CLIENT_SECRET')
 workspace_id = os.getenv('WORKSPACE_ID')
 
-def get_security_incidents(hours=168, limit=100, severity=None, status=None):
+def get_security_incidents(days=90, severity=None, status=None, title=None):
     try:
         print("Authenticating with Azure AD...")
         # Authentication
@@ -36,45 +36,25 @@ def get_security_incidents(hours=168, limit=100, severity=None, status=None):
         # Base query
         query = """
         SecurityIncident
-        | where TimeGenerated > ago({hours}h)
+        | where TimeGenerated > ago({days}d)
         {severity_filter}
         {status_filter}
-        | project
-            TimeGenerated,
-            Title,
-            Severity,
-            Status,
-            IncidentNumber,
-            Description,
-            Classification,
-            ClassificationReason,
-            ClassificationComment,
-            Owner,
-            ProviderName,
-            FirstActivityTime,
-            LastActivityTime,
-            LastModifiedTime,
-            CreatedTime,
-            IncidentUrl,
-            RelatedAnalyticRuleIds,
-            AlertIds,
-            BookmarkIds,
-            Comments,
-            Labels
+        {title_filter}
+        
         | order by TimeGenerated desc
-        | take {limit}
         """
 
         # Add filters if specified
         severity_filter = f"| where Severity == \"{severity}\"" if severity else ""
         status_filter = f"| where Status == \"{status}\"" if status else ""
+        title_filter = f"| where Title == \"{title}\"" if title else ""
         
         # Format the query with parameters
         query = query.format(
-            hours=hours,
-            limit=limit,
+            days=days,
             severity_filter=severity_filter,
-            status_filter=status_filter
+            status_filter=status_filter,
+            title_filter=title_filter
         )
 
         print(f"\nExecuting query:\n{query}\n")
@@ -311,10 +291,10 @@ def export_to_excel(incidents):
 
 if __name__ == "__main__":
     # Test different scenarios
-    print("\n1. Testing all security incidents from last 24 hours")
+    print("\n1. Testing security incidents with title '[Custom]-[TI]-DNS with TI Domain Correlation'")
     incidents = get_security_incidents(
-        hours=24,  # Last 24 hours
-        limit=50
+        days=90,  # Last 90 days
+        title="[Custom]-[TI]-DNS with TI Domain Correlation"
     )
     if incidents:
         display_incidents(incidents)
@@ -323,7 +303,6 @@ if __name__ == "__main__":
     # You can add specific severity filter like this:
     # print("\n2. Testing high severity incidents")
     # high_incidents = get_security_incidents(
-    #     hours=24,
-    #     limit=50,
+    #     days=90,
     #     severity="High"
     # ) 

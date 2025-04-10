@@ -16,7 +16,7 @@ client_id = os.getenv('CLIENT_ID')
 client_secret = os.getenv('CLIENT_SECRET')
 workspace_id = os.getenv('WORKSPACE_ID')
 
-def get_security_alerts(hours=168, limit=100, severity=None, status=None):
+def get_security_alerts(days=90, limit=100, severity=None, status=None):
     try:
         print("Authenticating with Azure AD...")
         # Authentication
@@ -36,34 +36,11 @@ def get_security_alerts(hours=168, limit=100, severity=None, status=None):
         # Base query
         query = """
         SecurityAlert
-        | where TimeGenerated > ago({hours}h)
+        | where TimeGenerated > ago({days}d)
         {severity_filter}
         {status_filter}
-        | project
-            TimeGenerated,
-            DisplayName,
-            AlertSeverity,
-            Description,
-            TenantId,
-            ProviderName,
-            VendorName,
-            ProductName,
-            AlertType,
-            ConfidenceLevel,
-            ConfidenceScore,
-            ExtendedProperties,
-            Entities,
-            RemediationSteps,
-            Status,
-            ProcessingEndTime,
-            ResourceId,
-            SystemAlertId,
-            CompromisedEntity,
-            Tactics,
-            Techniques,
-            AlertLink
+        | where AlertName == "[Custom]-[TI]-DNS with TI Domain Correlation"
         | order by TimeGenerated desc
-        | take {limit}
         """
 
         # Add filters if specified
@@ -72,7 +49,7 @@ def get_security_alerts(hours=168, limit=100, severity=None, status=None):
         
         # Format the query with parameters
         query = query.format(
-            hours=hours,
+            days=days,
             limit=limit,
             severity_filter=severity_filter,
             status_filter=status_filter
@@ -291,9 +268,9 @@ def export_to_excel(alerts):
 
 if __name__ == "__main__":
     # Test different scenarios
-    print("\n1. Testing all security alerts from last 24 hours")
+    print("\n1. Testing all security alerts from last 90 days")
     alerts = get_security_alerts(
-        hours=24,  # Last 24 hours
+        days=90,  # Last 90 days
         limit=50
     )
     if alerts:
@@ -303,7 +280,7 @@ if __name__ == "__main__":
     # You can add specific severity filter like this:
     # print("\n2. Testing high severity alerts")
     # high_alerts = get_security_alerts(
-    #     hours=24,
+    #     days=90,
     #     limit=50,
     #     severity="High"
     # ) 

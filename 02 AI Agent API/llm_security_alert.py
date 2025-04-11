@@ -6,32 +6,46 @@ from typing import List, Optional, Dict, Any, Union
 from dotenv import load_dotenv
 import pandas as pd
 from tabulate import tabulate
+import sys
+import importlib
 
 # Load environment variables
 load_dotenv()
 
 # Get Azure authentication details from environment variables
-tenant_id = os.getenv('AZURE_TENANT_ID')
-client_id = os.getenv('AZURE_CLIENT_ID')
-client_secret = os.getenv('AZURE_CLIENT_SECRET')
-workspace_id = os.getenv('AZURE_WORKSPACE_ID')
+tenant_id = os.getenv('TENANT_ID')
+client_id = os.getenv('CLIENT_ID')
+client_secret = os.getenv('CLIENT_SECRET')
+workspace_id = os.getenv('WORKSPACE_ID')
 
-# Import adal for Azure authentication if available
+# Check if credentials are properly configured
+if not all([tenant_id, client_id, client_secret, workspace_id]):
+    missing = []
+    if not tenant_id:
+        missing.append("TENANT_ID")
+    if not client_id:
+        missing.append("CLIENT_ID")
+    if not client_secret:
+        missing.append("CLIENT_SECRET")
+    if not workspace_id:
+        missing.append("WORKSPACE_ID")
+    
+    print(f"Error: Missing required environment variables: {', '.join(missing)}")
+    print("Please ensure these are set in your .env file or environment variables")
+    sys.exit(1)
+
+# Check for adal library
 try:
     import adal
-    adal_available = True
 except ImportError:
-    adal_available = False
-
-# Set a flag to use mock data if credentials or dependencies are missing
-use_mock_data = not all([tenant_id, client_id, client_secret, workspace_id, adal_available])
-if use_mock_data:
-    print("Warning: Missing Azure credentials or dependencies. Using mock data for demonstration.")
+    print("Error: The 'adal' library is required but not installed.")
+    print("Please install it using: pip install adal")
+    sys.exit(1)
 
 def get_security_alerts(hours=24, limit=50, severity=None, status=None, entity=None, tactic=None, technique=None, provider=None):
-    if use_mock_data:
-        return get_mock_security_alerts(hours, limit, severity, status, entity, tactic, technique, provider)
-    
+    """
+    Retrieve security alerts from Microsoft Sentinel via the Log Analytics API
+    """
     try:
         # Authentication
         authority_url = f"https://login.microsoftonline.com/{tenant_id}"
@@ -98,110 +112,7 @@ def get_security_alerts(hours=24, limit=50, severity=None, status=None, entity=N
 
     except Exception as e:
         print(f"Error getting security alerts: {str(e)}")
-        return None
-
-def get_mock_security_alerts(hours=24, limit=50, severity=None, status=None, entity=None, tactic=None, technique=None, provider=None):
-    """Generate mock security alert data for demonstration purposes"""
-    
-    # Create timestamp range based on hours
-    now = datetime.now()
-    mock_alerts = []
-    
-    # Define alert severities
-    severities = ["High", "Medium", "Low", "Informational"]
-    
-    # Define possible tactics
-    all_tactics = [
-        "InitialAccess", "Execution", "Persistence", "PrivilegeEscalation", 
-        "DefenseEvasion", "CredentialAccess", "Discovery", "LateralMovement", 
-        "Collection", "Exfiltration", "CommandAndControl", "Impact"
-    ]
-    
-    # Define possible techniques
-    all_techniques = [
-        "T1566 - Phishing", "T1078 - Valid Accounts", "T1190 - Exploit Public-Facing Application",
-        "T1133 - External Remote Services", "T1053 - Scheduled Task/Job", 
-        "T1059 - Command and Scripting Interpreter", "T1098 - Account Manipulation"
-    ]
-    
-    # Define possible providers
-    providers = ["Microsoft Defender ATP", "Azure Security Center", "Azure AD Identity Protection", 
-                "Azure Advanced Threat Protection", "Microsoft Cloud App Security"]
-    
-    # Define possible statuses
-    statuses = ["New", "In Progress", "Closed"]
-    
-    # Generate mock alerts
-    alert_count = min(limit, 100)  # Cap at 100 mock alerts max
-    
-    for i in range(alert_count):
-        # Filter alerts based on parameters
-        alert_severity = severity if severity else severities[i % len(severities)]
-        alert_status = status if status else statuses[i % len(statuses)]
-        alert_provider = provider if provider else providers[i % len(providers)]
-        
-        # Generate tactics and techniques
-        current_tactics = [all_tactics[i % len(all_tactics)]]
-        current_techniques = [all_techniques[i % len(all_techniques)]]
-        
-        # Skip if filtering by tactic/technique and doesn't match
-        if tactic and tactic not in current_tactics:
-            continue
-        if technique and technique not in current_techniques:
-            continue
-        
-        # Random time within the hours range
-        hours_ago = int((i / alert_count) * hours)
-        alert_time = (now - timedelta(hours=hours_ago)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-        local_time = (now - timedelta(hours=hours_ago)).strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Create the alert
-        alert = {
-            "AlertName": f"Mock Security Alert {i+1}",
-            "DisplayName": f"Mock Security Alert {i+1}",
-            "AlertSeverity": alert_severity,
-            "TimeGenerated": alert_time,
-            "TimeGenerated [Local]": local_time,
-            "Status": alert_status,
-            "ProviderName": alert_provider,
-            "Description": f"This is a mock security alert for demonstration purposes. Severity: {alert_severity}, Provider: {alert_provider}",
-            "Tactics": current_tactics,
-            "Techniques": current_techniques,
-            "Entities": [{"Type": "Account", "Name": f"user{i}@example.com"}]
-        }
-        
-        mock_alerts.append(alert)
-    
-    # Create mock response structure similar to what the API would return
-    column_names = ["TimeGenerated", "TimeGenerated [Local]", "AlertName", "DisplayName", "AlertSeverity", 
-                    "Status", "Description", "Entities", "Tactics", "Techniques", "ProviderName"]
-    
-    result = {
-        "tables": [{
-            "name": "SecurityAlerts",
-            "columns": [{"name": col, "type": "string"} for col in column_names],
-            "rows": []
-        }]
-    }
-    
-    # Format rows for the mock response
-    for alert in mock_alerts:
-        row = [
-            alert.get("TimeGenerated", ""),
-            alert.get("TimeGenerated [Local]", ""),
-            alert.get("AlertName", ""),
-            alert.get("DisplayName", ""),
-            alert.get("AlertSeverity", ""),
-            alert.get("Status", ""),
-            alert.get("Description", ""),
-            json.dumps(alert.get("Entities", [])),
-            json.dumps(alert.get("Tactics", [])),
-            json.dumps(alert.get("Techniques", [])),
-            alert.get("ProviderName", "")
-        ]
-        result["tables"][0]["rows"].append(row)
-    
-    return result
+        raise  # Re-raise the exception to let callers handle it
 
 def display_alerts(alerts_data, format='table'):
     if not alerts_data or 'tables' not in alerts_data:
@@ -341,7 +252,6 @@ When parsing user queries, extract the following parameters:
 - Sorting: How to sort results
 
 Respond in JSON format with extracted parameters. For example:
-```json
 {
   "hours": 24,
   "limit": 50,
@@ -355,10 +265,8 @@ Respond in JSON format with extracted parameters. For example:
   "aggregation_type": "count",
   "time_aggregation": null,
   "sort_by": "TimeGenerated",
-  "sort_direction": "desc",
-  "response_type": "summary"
+  "sort_direction": "desc"
 }
-```
 
 Use null for parameters not specified in the query. Infer reasonable values when they're implied but not explicitly stated.
 """
@@ -482,7 +390,64 @@ Use null for parameters not specified in the query. Infer reasonable values when
                     params.aggregation_type = "group_by_provider"
             
             return params
-    
+
+    def process_query(self, user_query: str):
+        """
+        Main method to process a user query from start to finish
+        """
+        print("\nProcessing your query...")
+        
+        try:
+            # Step 1: Parse the query with LLM
+            params = self.parse_query_with_llm(user_query)
+            self.last_params = params
+            
+            # Step 2: Generate KQL query
+            kql_query = self.generate_kql_query(params)
+            print(f"\nGenerated KQL Query:\n{kql_query}\n")
+            
+            # Step 3: Execute query via the API
+            alerts = get_security_alerts(
+                hours=params.hours,
+                limit=params.limit,
+                severity=params.severity,
+                status=params.status,
+                entity=params.entity,
+                tactic=params.tactic,
+                technique=params.technique,
+                provider=params.provider
+            )
+            self.last_alerts = alerts
+            
+            if not alerts or 'tables' not in alerts or not alerts['tables'][0]['rows']:
+                print("No alerts found matching your criteria.")
+                return
+            
+            # Step 4: Generate summary with LLM
+            summary = self.generate_result_summary(alerts, params)
+            print("\nSummary of Results:")
+            print("===================")
+            print(summary)
+            print("===================")
+            
+            # Step 5: Ask if user wants to see detailed results
+            if input("\nShow detailed alerts? (y/n): ").lower() == 'y':
+                display_alerts(alerts)
+            
+            # Step 6: Ask if user wants to export to Excel
+            if input("\nExport to Excel? (y/n): ").lower() == 'y':
+                export_to_excel(alerts)
+                
+            # Add assistant response to conversation history
+            alert_count = 0
+            if isinstance(alerts, dict) and 'tables' in alerts and 'rows' in alerts['tables'][0]:
+                alert_count = len(alerts['tables'][0]['rows'])
+            self.add_to_history("assistant", f"I found {alert_count} alerts matching your query. {summary}")
+            
+        except Exception as e:
+            print(f"\nError processing query: {str(e)}")
+            self.add_to_history("assistant", f"An error occurred while processing your query: {str(e)}")
+
     def generate_kql_query(self, params: QueryParameter) -> str:
         """
         Generate a KQL query based on the extracted parameters
@@ -533,7 +498,10 @@ Use null for parameters not specified in the query. Infer reasonable values when
         
         # Add sort order
         if params.aggregation_type is None:
-            query += f"| order by {params.sort_by} {params.sort_direction}\n"
+            # Ensure sort_by and sort_direction have valid values
+            sort_by = params.sort_by if params.sort_by else "TimeGenerated"
+            sort_direction = params.sort_direction if params.sort_direction else "desc"
+            query += f"| order by {sort_by} {sort_direction}\n"
         
         # Add limit
         query += f"| take {params.limit}"
@@ -549,13 +517,26 @@ Use null for parameters not specified in the query. Infer reasonable values when
         if not alerts:
             return "No alerts found matching your criteria."
         
+        # Extract alert data from the API response structure
+        alert_data = []
+        if isinstance(alerts, dict) and 'tables' in alerts:
+            table = alerts['tables'][0]
+            column_names = [col['name'] for col in table['columns']]
+            rows = table['rows']
+            
+            for row in rows:
+                alert = dict(zip(column_names, row))
+                alert_data.append(alert)
+        else:
+            alert_data = alerts  # In case alerts is already a list
+        
         # Create a summary of the alerts for the LLM
         alert_summary = []
-        for i, alert in enumerate(alerts[:10]):  # Limit to first 10 for LLM context
+        for i, alert in enumerate(alert_data[:10]):  # Limit to first 10 for LLM context
             summary = {
                 "severity": alert.get("AlertSeverity", "Unknown"),
-                "name": alert.get("DisplayName", "Unnamed Alert"),
-                "time": alert.get("TimeGenerated [Local]", "Unknown Time"),
+                "name": alert.get("DisplayName", alert.get("AlertName", "Unnamed Alert")),
+                "time": alert.get("TimeGenerated [Local]", alert.get("TimeGenerated", "Unknown Time")),
                 "provider": alert.get("ProviderName", "Unknown Provider"),
                 "status": alert.get("Status", "Unknown Status")
             }
@@ -573,7 +554,7 @@ I executed a query for security alerts with the following parameters:
 - Provider: {params.provider if params.provider else 'Any'}
 - Text search: {params.contains_text if params.contains_text else 'None'}
 
-The query returned {len(alerts)} alerts. Here's a sample of the results:
+The query returned {len(alert_data)} alerts. Here's a sample of the results:
 {json.dumps(alert_summary, indent=2)}
 
 Please provide a concise summary of these security alerts, including:
@@ -600,7 +581,21 @@ Please provide a concise summary of these security alerts, including:
             severities = {}
             providers = {}
             
-            for alert in alerts:
+            # Extract alert data if not already done
+            if not locals().get('alert_data'):
+                alert_data = []
+                if isinstance(alerts, dict) and 'tables' in alerts:
+                    table = alerts['tables'][0]
+                    column_names = [col['name'] for col in table['columns']]
+                    rows = table['rows']
+                    
+                    for row in rows:
+                        alert = dict(zip(column_names, row))
+                        alert_data.append(alert)
+                else:
+                    alert_data = alerts  # In case alerts is already a list
+            
+            for alert in alert_data:
                 sev = alert.get("AlertSeverity", "Unknown")
                 if sev in severities:
                     severities[sev] += 1
@@ -613,56 +608,11 @@ Please provide a concise summary of these security alerts, including:
                 else:
                     providers[prov] = 1
             
-            summary = f"Found {len(alerts)} alerts in the last {params.hours} hours.\n"
+            summary = f"Found {len(alert_data)} alerts in the last {params.hours} hours.\n"
             summary += "Severity breakdown: " + ", ".join([f"{k}: {v}" for k, v in severities.items()]) + "\n"
             summary += "Provider breakdown: " + ", ".join([f"{k}: {v}" for k, v in providers.items()])
             
             return summary
-    
-    def process_query(self, user_query: str):
-        """
-        Main method to process a user query from start to finish
-        """
-        print("\nProcessing your query...")
-        
-        # Step 1: Parse the query with LLM
-        params = self.parse_query_with_llm(user_query)
-        self.last_params = params
-        
-        # Step 2: Generate KQL query
-        kql_query = self.generate_kql_query(params)
-        print(f"\nGenerated KQL Query:\n{kql_query}\n")
-        
-        # Step 3: Execute query via the existing API
-        alerts = get_security_alerts(
-            hours=params.hours,
-            limit=params.limit,
-            severity=params.severity,
-            status=params.status
-        )
-        self.last_alerts = alerts
-        
-        if not alerts:
-            print("No alerts found matching your criteria.")
-            return
-        
-        # Step 4: Generate summary with LLM
-        summary = self.generate_result_summary(alerts, params)
-        print("\nSummary of Results:")
-        print("===================")
-        print(summary)
-        print("===================")
-        
-        # Step 5: Ask if user wants to see detailed results
-        if input("\nShow detailed alerts? (y/n): ").lower() == 'y':
-            display_alerts(alerts)
-        
-        # Step 6: Ask if user wants to export to Excel
-        if input("\nExport to Excel? (y/n): ").lower() == 'y':
-            export_to_excel(alerts)
-            
-        # Add assistant response to conversation history
-        self.add_to_history("assistant", f"I found {len(alerts)} alerts matching your query. {summary}")
 
 def check_ollama_available():
     """Check if Ollama is available at the specified URL"""
@@ -688,7 +638,7 @@ def main():
     print("============================")
     print("This agent can answer questions about security alerts from Microsoft Sentinel.")
     
-    # Check Ollama availability
+    # Check Ollama availability for LLM features
     print("\nChecking for Ollama availability...")
     model = check_ollama_available()
     
@@ -721,4 +671,4 @@ def main():
         agent.process_query(user_input)
 
 if __name__ == "__main__":
-    main() 
+    main()

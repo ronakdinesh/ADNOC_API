@@ -2,9 +2,24 @@ import pandas as pd
 import os
 import json
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 import re
 import traceback
+import ollama  # Using ollama client directly
+from pydantic import BaseModel, Field
+
+# Ollama configuration
+OLLAMA_API_BASE = "http://localhost:11434"
+OLLAMA_MODEL = "llama3.2:latest"
+
+
+class IncidentAnalysisOutput(BaseModel):
+    # Allow threat_details to be a dictionary or fallback to string
+    threat_details: Union[str, Dict[str, Any]] = Field(description="Detailed description of the identified threat, including type and vector, or a structured dictionary.")
+    significance: str = Field(description="Assessment of the incident's importance and potential impact.")
+    recommended_actions: List[str] = Field(description="List of concrete steps to take for remediation and prevention.")
+    summary: str = Field(description="A brief overall summary of the incident analysis.")
+
 
 def extract_ips_and_domains(text: str) -> tuple:
     """Extract IPs and domains from text"""
@@ -178,104 +193,158 @@ KEY MILESTONES:
     return formatted
 
 def analyze_incident_context(incident_data: pd.DataFrame) -> str:
-    """Analyze incident data and provide context"""
-    
+    """Analyze incident data and provide context using an LLM"""
+
     # Sort data by timestamp to ensure chronological order
     incident_data = incident_data.sort_values('LastModifiedTime')
-    
+
     # Get first and last rows
     first_row = incident_data.iloc[0]
     last_row = incident_data.iloc[-1]
-    
+
     # Extract key information for analysis
     incident_number = str(first_row['IncidentNumber'])
     tenant_id = first_row['TenantId']
-    
+
     # Extract comments
     comments = []
-    if 'Comments' in last_row and last_row['Comments']:
+    if 'Comments' in last_row and pd.notna(last_row['Comments']):
         try:
             comments_data = json.loads(last_row['Comments'])
-            for comment in comments_data:
-                if isinstance(comment, dict) and 'message' in comment:
-                    comments.append(comment['message'])
-        except:
+            # Handle cases where comments_data might be a list of dicts or just a string
+            if isinstance(comments_data, list):
+                for comment in comments_data:
+                    if isinstance(comment, dict) and 'message' in comment:
+                        comments.append(comment['message'])
+            elif isinstance(comments_data, str):
+                 comments.append(comments_data) # Assume it's a single comment string if not list
+        except json.JSONDecodeError:
+            # Handle cases where comments column is a plain string not in JSON format
             comments = [str(last_row['Comments'])]
-    
+        except Exception as e:
+             print(f"Error processing comments for incident {incident_number}: {e}")
+             comments = [str(last_row['Comments'])] # Fallback to raw string
+
     # Extract entities from comments
     all_ips = []
     all_domains = []
-    for comment in comments:
-        ips, domains = extract_ips_and_domains(comment)
+    comments_text = "\n".join(comments)
+    if comments_text:
+        ips, domains = extract_ips_and_domains(comments_text)
         all_ips.extend(ips)
         all_domains.extend(domains)
-    
+
     # Remove duplicates
     all_ips = list(set(all_ips))
     all_domains = list(set(all_domains))
-    
-    # Generate contextual analysis
-    analysis = f"""
-INCIDENT SUMMARY:
-----------------
-Incident #{incident_number} was detected from TenantID {tenant_id}
-Current Status: {last_row['Status']} (initially {first_row['Status']})
-Current Severity: {last_row['Severity']} (initially {first_row['Severity']})
-First Detected: {first_row['LastModifiedTime']}
-Last Updated: {last_row['LastModifiedTime']}
-Number of Updates: {len(incident_data)}
 
-DETECTED ENTITIES:
------------------
-IPs: {', '.join(all_ips) if all_ips else 'None identified'}
-Domains: {', '.join(all_domains) if all_domains else 'None identified'}
+    # Prepare information for the LLM
+    incident_info = (
+        f"Incident Number: {incident_number}\n"
+        f"Tenant ID: {tenant_id}\n"
+        f"Current Status: {last_row['Status']} (Initial: {first_row['Status']})\n"
+        f"Current Severity: {last_row['Severity']} (Initial: {first_row['Severity']})\n"
+        f"First Detected: {first_row['LastModifiedTime']}\n"
+        f"Last Updated: {last_row['LastModifiedTime']}\n"
+        f"Total Updates: {len(incident_data)}\n"
+        f"Detected IPs: {', '.join(all_ips) if all_ips else 'None'}\n"
+        f"Detected Domains: {', '.join(all_domains) if all_domains else 'None'}\n"
+        f"Comments:\n{comments_text if comments_text else 'No comments available.'}"
+    )
 
-INCIDENT ANALYSIS:
------------------
-"""
-    
-    # Add incident-specific analysis
-    if 'DNS with TI Domain' in str(comments):
-        analysis += """
-This security incident involves a DNS request to a malicious domain that was flagged by threat 
-intelligence. The domain ecomicrolab.com was identified as malicious, having been flagged by 
-9 out of 94 security vendors. The connection attempt was made from an internal workstation 
-but was successfully blocked by proxy controls.
+    # Construct the prompt for the LLM
+    prompt = (
+        f"You are a cybersecurity analyst reviewing security incidents. Provide detailed analysis of the incident data.\n\n"
+        f"Analyze the following security incident data and provide a structured analysis. "
+        f"Focus on the threat details, significance, and recommended actions based ONLY on the provided information.\n\n"
+        f"Incident Data:\n"
+        f"--------------\n"
+        f"{incident_info}\n"
+        f"--------------\n\n"
+        f"Provide the analysis as a JSON object with keys: 'threat_details', 'significance', 'recommended_actions' (as a list of strings), and 'summary'."
+    )
 
-THREAT DETAILS:
-* Threat Type: Malicious Domain Communication / Potential C2 Channel
-* Attack Vector: DNS Request to Malicious Domain
-* Affected Systems: Workstation (User: enuaimi@adnoc.ae)
-* Potential Impact: Data exfiltration, command & control activity, additional malware download
+    analysis_content = "Analysis could not be generated."
+    try:
+        print(f"\nAttempting to generate analysis for Incident #{incident_number} using Ollama model {OLLAMA_MODEL} with JSON format enforced...")
 
-SIGNIFICANCE:
-* This incident represents an early stage of a potential attack chain
-* The fact that the communication was blocked indicates security controls are working
-* However, the presence of this activity suggests endpoint compromise or user error
+        # Configure ollama client with the right base URL
+        client = ollama.Client(host=OLLAMA_API_BASE)
 
-RECOMMENDED ACTIONS:
-* Isolate affected workstation until investigation completes
-* Interview user about their recent activities
-* Block domain at all network egress points
-* Perform memory forensics on affected workstation
-* Check for similar connection attempts from other internal systems
-* Update endpoint security signatures across the environment
-"""
-    else:
-        # Generic analysis for other types of incidents
-        analysis += f"""
-Based on the available information, this security incident is currently {last_row['Status']} with 
-{last_row['Severity']} severity. The incident was initially created on {first_row['LastModifiedTime']} 
-and has undergone {len(incident_data)} updates.
+        # Make the API call to Ollama, enforcing JSON output
+        response = client.chat(
+            model=OLLAMA_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            stream=False,
+            format='json'
+        )
 
-Key points:
-* The incident was originally rated as {first_row['Severity']} severity
-* Current status is {last_row['Status']}
-* Owner information: {last_row['Owner']}
+        # Extract the response content (should be JSON string)
+        json_str = response['message']['content']
+        print(f"Response received from model. Parsing JSON...")
 
-Further investigation is required to determine the full scope and impact of this incident.
-"""
-    
+        # Parse the JSON string (remove regex fallback)
+        try:
+            analysis_result = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            print(f"Failed to decode JSON response even with format='json': {e}")
+            print(f"Raw response content:\n{json_str}")
+            raise ValueError("Ollama response was not valid JSON despite format='json' instruction")
+
+        # Validate against our Pydantic model
+        validated_result = IncidentAnalysisOutput(**analysis_result)
+        print(f"Analysis generated successfully for Incident #{incident_number}.")
+
+        # Format threat_details based on its type (string or dict)
+        threat_details_formatted = ""
+        if isinstance(validated_result.threat_details, dict):
+            # Simple formatting for a dict - convert key-value pairs to string
+            threat_details_formatted = "\n".join([f"  - {k}: {v}" for k, v in validated_result.threat_details.items()])
+        else:
+            # Assume it's a string if not a dict
+            threat_details_formatted = validated_result.threat_details
+
+        analysis_content = (
+            f"THREAT DETAILS:\n* {threat_details_formatted}\n\n"
+            f"SIGNIFICANCE:\n* {validated_result.significance}\n\n"
+            f"RECOMMENDED ACTIONS:\n" +
+            "\n".join([f"* {action}" for action in validated_result.recommended_actions]) + "\n\n"
+            f"SUMMARY:\n{validated_result.summary}"
+        )
+
+    except Exception as e:
+        print(f"\nError generating analysis with LLM for incident {incident_number}: {e}")
+        traceback.print_exc() # Print full traceback for debugging LLM errors
+        analysis_content = f"Error during AI analysis generation: {e}\nUsing generic analysis based on available data.\n\n"
+        # Fallback to a simpler analysis if LLM fails
+        analysis_content += (
+             f"Based on the available data, this security incident is currently {last_row['Status']} with "
+             f"{last_row['Severity']} severity. It was first detected on {first_row['LastModifiedTime']} "
+             f"and last updated on {last_row['LastModifiedTime']}.\n\n"
+             f"Detected IPs: {', '.join(all_ips) if all_ips else 'None'}\n"
+             f"Detected Domains: {', '.join(all_domains) if all_domains else 'None'}\n\n"
+             f"Further investigation is needed."
+        )
+
+    # Generate the final analysis string including the base summary and the AI part
+    analysis = (
+        f"INCIDENT SUMMARY:\n"
+        f"----------------\n"
+        f"Incident #{incident_number} detected from TenantID {tenant_id}\n"
+        f"Current Status: {last_row['Status']} (initially {first_row['Status']})\n"
+        f"Current Severity: {last_row['Severity']} (initially {first_row['Severity']})\n"
+        f"First Detected: {first_row['LastModifiedTime']}\n"
+        f"Last Updated: {last_row['LastModifiedTime']}\n"
+        f"Number of Updates: {len(incident_data)}\n\n"
+        f"DETECTED ENTITIES:\n"
+        f"-----------------\n"
+        f"IPs: {', '.join(all_ips) if all_ips else 'None identified'}\n"
+        f"Domains: {', '.join(all_domains) if all_domains else 'None identified'}\n\n"
+        f"INCIDENT ANALYSIS (Generated by AI):\n"
+        f"----------------------------------\n"
+        f"{analysis_content}"
+    )
+
     return analysis
 
 def analyze_security_incidents(excel_path: str, tenant_id: str = None) -> None:
@@ -311,8 +380,8 @@ def analyze_security_incidents(excel_path: str, tenant_id: str = None) -> None:
                 
                 # Get contextual analysis
                 context_analysis = analyze_incident_context(group)
-                print("\nSOC ANALYST INSIGHTS:")
-                print("="*20)
+                print("\nSOC ANALYST INSIGHTS (Generated by AI):") # Updated title
+                print("="*35) # Adjusted length
                 print(context_analysis)
                 print("\n" + "="*100)
                 
@@ -325,8 +394,8 @@ def analyze_security_incidents(excel_path: str, tenant_id: str = None) -> None:
                         f.write(f"SECURITY INCIDENT ANALYSIS - #{incident_number}\n")
                         f.write("="*100 + "\n\n")
                         f.write(formatted_timeline + "\n\n")
-                        f.write("SOC ANALYST INSIGHTS:\n")
-                        f.write("="*20 + "\n")
+                        f.write("SOC ANALYST INSIGHTS (Generated by AI):\n") # Updated title in file
+                        f.write("="*35 + "\n") # Adjusted length in file
                         f.write(context_analysis + "\n\n")
                         f.write("="*100 + "\n")
                     
@@ -356,4 +425,5 @@ def analyze_security_incidents(excel_path: str, tenant_id: str = None) -> None:
 
 if __name__ == "__main__":
     excel_path = os.path.join('03 extracted data', 'data_15aprl', 'security_incidents_20250415_124725.xlsx')
+    # Make sure Ollama server is running before executing this script
     analyze_security_incidents(excel_path) 

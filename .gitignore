@@ -1,0 +1,69 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Excel files
+*.xlsx
+*.xls
+*.csv
+~$*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Sensitive configuration
+*.pem
+*.key
+
+# Node modules
+node_modules/
+*/node_modules/
+**/node_modules/
+
+# Large cache files
+**/node_modules/.cache/
+sentinel-analyst/node_modules/@next/swc-win32-x64-msvc/
+sentinel-analyst/frontend/node_modules/.cache/
+
+# Analysis reports
+*.json
+incident_analysis_*
+
+# Other
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.DS_Store 

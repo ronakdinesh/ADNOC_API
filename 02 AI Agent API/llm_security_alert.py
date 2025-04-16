@@ -9,6 +9,14 @@ from tabulate import tabulate
 import sys
 import importlib
 
+# Import our incident analysis module
+try:
+    from incident_analysis import generate_analysis, IncidentAnalysisOutput
+except ImportError:
+    # For relative imports depending on where this is run from
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    from incident_analysis import generate_analysis, IncidentAnalysisOutput
+
 # Load environment variables
 load_dotenv()
 
@@ -113,6 +121,44 @@ def get_security_alerts(hours=24, limit=50, severity=None, status=None, entity=N
     except Exception as e:
         print(f"Error getting security alerts: {str(e)}")
         raise  # Re-raise the exception to let callers handle it
+
+def analyze_security_incident(incident_id=None, incident_data=None):
+    """
+    Analyze a security incident and generate a formatted analysis
+    
+    Args:
+        incident_id: ID of the incident to analyze
+        incident_data: Raw incident data if already retrieved
+        
+    Returns:
+        str: Formatted analysis of the incident
+    """
+    try:
+        # If no incident data is provided, retrieve it using the incident_id
+        if not incident_data and incident_id:
+            # Here you would typically call an API to get incident details
+            # For demo purposes, we'll create a sample incident
+            incident_data = {
+                'id': incident_id,
+                'title': f'Sample Incident {incident_id}',
+                'severity': 'Medium',
+                'status': 'Active',
+                'firstDetectedOn': datetime.now().isoformat(),
+                'lastUpdatedOn': datetime.now().isoformat(),
+                'IPs': ['10.0.0.1', '192.168.1.1'],
+                'Domains': ['example.com', 'suspicious-domain.com']
+            }
+        
+        if not incident_data:
+            return "Error: No incident data provided for analysis"
+        
+        # Use our generate_analysis function from the incident_analysis module
+        analysis_text = generate_analysis(incident_data)
+        return analysis_text
+        
+    except Exception as e:
+        print(f"Error analyzing security incident: {str(e)}")
+        return f"Error generating incident analysis: {str(e)}"
 
 def display_alerts(alerts_data, format='table'):
     if not alerts_data or 'tables' not in alerts_data:
@@ -448,6 +494,37 @@ Use null for parameters not specified in the query. Infer reasonable values when
             print(f"\nError processing query: {str(e)}")
             self.add_to_history("assistant", f"An error occurred while processing your query: {str(e)}")
 
+    def process_incident_analysis(self, incident_id=None, incident_data=None):
+        """
+        Analyze a specific security incident
+        
+        Args:
+            incident_id: ID of the incident to analyze
+            incident_data: Raw incident data if already retrieved
+        """
+        print("\nAnalyzing security incident...")
+        
+        try:
+            # Generate the analysis
+            analysis = analyze_security_incident(incident_id, incident_data)
+            
+            # Display the analysis
+            print("\nIncident Analysis:")
+            print("=================")
+            print(analysis)
+            print("=================")
+            
+            # Add the analysis to conversation history
+            self.add_to_history("assistant", f"I've analyzed the security incident. {analysis}")
+            
+            return analysis
+            
+        except Exception as e:
+            error_msg = f"Error analyzing incident: {str(e)}"
+            print(f"\n{error_msg}")
+            self.add_to_history("assistant", error_msg)
+            return error_msg
+
     def generate_kql_query(self, params: QueryParameter) -> str:
         """
         Generate a KQL query based on the extracted parameters
@@ -649,12 +726,10 @@ def main():
     else:
         print(f"Using Ollama with model: {model}")
     
-    print("\nAsk questions in natural language like:")
-    print("- Show me high severity alerts from the last 24 hours")
-    print("- Any unusual login attempts in the past week?")
-    print("- Count alerts by provider")
-    print("- What are the most common attack tactics?")
-    print("Type 'exit' to quit.")
+    print("\nOptions:")
+    print("1. Query security alerts - Ask natural language questions")
+    print("2. Analyze security incident - Get AI-generated analysis for a specific incident")
+    print("Type 'exit' to quit at any time.")
     print()
     
     # Initialize the agent
@@ -662,13 +737,54 @@ def main():
     
     # Main interaction loop
     while True:
-        user_input = input("\nAsk a question about security alerts (or 'exit' to quit): ")
+        mode = input("\nSelect an option (1-2) or 'exit' to quit: ")
         
-        if user_input.lower() in ['exit', 'quit', 'q']:
+        if mode.lower() in ['exit', 'quit', 'q']:
             break
         
-        # Process the user's query
-        agent.process_query(user_input)
+        if mode == '1':
+            # Alert query mode
+            print("\nAsk questions in natural language like:")
+            print("- Show me high severity alerts from the last 24 hours")
+            print("- Any unusual login attempts in the past week?")
+            print("- Count alerts by provider")
+            print("- What are the most common attack tactics?")
+            
+            user_input = input("\nAsk a question about security alerts: ")
+            if user_input.lower() in ['exit', 'quit', 'q', 'back']:
+                continue
+                
+            # Process the user's query
+            agent.process_query(user_input)
+            
+        elif mode == '2':
+            # Incident analysis mode
+            print("\nEnter incident ID or 'sample' to analyze a sample incident:")
+            incident_input = input("Incident ID: ")
+            
+            if incident_input.lower() in ['exit', 'quit', 'q', 'back']:
+                continue
+                
+            if incident_input.lower() == 'sample':
+                # Use sample incident data
+                sample_incident = {
+                    'id': '690296',
+                    'title': 'Suspicious Domain Access',
+                    'severity': 'Low',
+                    'status': 'Active',
+                    'firstDetectedOn': '2025-04-14T11:58:03.7333333Z',
+                    'lastUpdatedOn': '2025-04-14T12:59:34.8021471Z',
+                    'updatesCount': 6,
+                    'IPs': ['0.0.0.0', '10.190.33.126', '10.248.4.135'],
+                    'Domains': ['ecomicrolab.com', 'adnoc.ae'],
+                    'TenantID': '2685c49d-739e-4a99-ac4d-adafb4799ac8'
+                }
+                agent.process_incident_analysis(incident_data=sample_incident)
+            else:
+                # Use provided incident ID
+                agent.process_incident_analysis(incident_id=incident_input)
+        else:
+            print("Invalid option. Please select 1 or 2.")
 
 if __name__ == "__main__":
     main()

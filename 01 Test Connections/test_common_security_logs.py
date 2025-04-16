@@ -16,7 +16,7 @@ client_id = os.getenv('CLIENT_ID')
 client_secret = os.getenv('CLIENT_SECRET')
 workspace_id = os.getenv('WORKSPACE_ID')
 
-def get_common_security_logs(hours=24, limit=50, device_vendor=None):
+def get_common_security_logs(hours=24, limit=5, device_vendor=None):
     try:
         print("Authenticating with Azure AD...")
         # Authentication
@@ -38,23 +38,7 @@ def get_common_security_logs(hours=24, limit=50, device_vendor=None):
         CommonSecurityLog_Enrich
         | where TimeGenerated > ago({hours}h)
         {vendor_filter}
-        | project TimeGenerated, 
-                 DeviceVendor,
-                 DeviceEventClassID,
-                 Activity,
-                 DeviceAction,
-                 ApplicationProtocol,
-                 DestinationPort,
-                 DestinationIP,
-                 DeviceName,
-                 Protocol,
-                 RequestURL,
-                 SourceHostName,
-                 SourceIP,
-                 SourceUserName,
-                 DeviceEventCategory,
-                 FlexString2,
-                 OpCo
+        
         | order by TimeGenerated desc
         | take {limit}
         """
@@ -205,7 +189,7 @@ if __name__ == "__main__":
     print("\n1. Testing all security logs from last 7 days")
     logs = get_common_security_logs(
         hours=24*7,  # Last 7 days
-        limit=50
+        limit=5
     )
     if logs:
         display_logs(logs)

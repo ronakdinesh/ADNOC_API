@@ -1,4 +1,4 @@
-import os
+ import os
 import json
 import requests
 from datetime import datetime, timedelta
@@ -12,7 +12,7 @@ from test_security_incidents import get_security_incidents, display_incidents, e
 load_dotenv()
 
 # Ollama configuration
-OLLAMA_API_BASE = "http://localhost:11434"
+OLLAMA_API_BASE = "http://localhost:11434/v1"
 OLLAMA_MODEL = "llama3.2:latest"
 
 class QueryParameter:
@@ -55,7 +55,7 @@ class SecurityIncidentAgent:
         """
         Call Ollama API using the requests library
         """
-        url = f"{self.ollama_api_base}/api/chat"
+        url = f"{self.ollama_api_base}/chat/completions"
         headers = {
             "Content-Type": "application/json"
         }
@@ -429,14 +429,10 @@ Please provide a concise summary of these security incidents, including:
 def check_ollama_available():
     """Check if Ollama is available at the specified URL"""
     try:
-        response = requests.get(f"{OLLAMA_API_BASE}/api/tags")
+        response = requests.get(f"{OLLAMA_API_BASE}/models")
         if response.status_code == 200:
-            available_models = []
-            data = response.json()
-            if "models" in data:
-                available_models = [model["name"] for model in data["models"]]
-            else:
-                available_models = [model["name"] for model in data.get("models", [])]
+            models = response.json().get("models", [])
+            available_models = [model["name"] for model in models]
             print(f"Ollama is available. Available models: {', '.join(available_models)}")
             
             if OLLAMA_MODEL not in available_models:

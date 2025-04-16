@@ -56,6 +56,7 @@ if not AZURE_CREDS_LOADED:
 else:
     print("Azure Log Analytics credentials loaded successfully.")
 
+# Using LLM at runtime to fetch MITRE ATT&CK technique information instead of hardcoding
 
 class IncidentAnalysisOutput(BaseModel):
     threat_details: Union[str, Dict[str, Any]]
@@ -84,11 +85,10 @@ class SecurityIndicators(BaseModel):
 
 
 def get_mitre_attack_info(technique_ids: List[str], technique_details: Dict[str, Dict[str, str]] = None) -> str:
-    """Provide information about MITRE ATT&CK techniques, preferring LLM-provided details when available"""
-    # Instead of hardcoding MITRE ATT&CK techniques, we'll use the LLM to generate information
-    # about techniques that aren't provided in technique_details
+    """Provide information about MITRE ATT&CK techniques using the LLM at runtime"""
+    # We'll use the LLM to generate information about all techniques that aren't in technique_details
     
-    # First, check which techniques need additional information
+    # First, collect all techniques that need information
     techniques_needing_info = []
     for technique_id in technique_ids:
         # Clean up technique ID format
@@ -100,7 +100,7 @@ def get_mitre_attack_info(technique_ids: List[str], technique_details: Dict[str,
         if not technique_details or clean_id not in technique_details:
             techniques_needing_info.append(clean_id)
     
-    # If we need to get information for any techniques, use the LLM
+    # Get information for techniques that need it
     if techniques_needing_info:
         try:
             # Configure ollama client with the right base URL
@@ -140,7 +140,18 @@ def get_mitre_attack_info(technique_ids: List[str], technique_details: Dict[str,
                     
         except Exception as e:
             print(f"Error generating MITRE ATT&CK information: {str(e)}")
-            # If there's an error, we'll continue with whatever information we have
+            # If there's an error, create a generic placeholder for missing techniques
+            if technique_details is None:
+                technique_details = {}
+            
+            for tech_id in techniques_needing_info:
+                if tech_id not in technique_details:
+                    technique_details[tech_id] = {
+                        "name": f"Technique {tech_id}",
+                        "tactic": "Unknown",
+                        "description": "Information could not be retrieved. Please refer to the MITRE ATT&CK website.",
+                        "mitigation": "Refer to the MITRE ATT&CK website (https://attack.mitre.org/techniques/) for more information."
+                    }
     
     # Format the info for each technique
     formatted_info = "MITRE ATT&CK TECHNIQUES:\n"
@@ -151,25 +162,18 @@ def get_mitre_attack_info(technique_ids: List[str], technique_details: Dict[str,
         if not technique_id.startswith("T"):
             technique_id = f"T{technique_id}"
         
-        # Prefer LLM-provided details if available
+        # Get technique details
         if technique_details and technique_id in technique_details:
             technique_info = technique_details[technique_id]
-            name = technique_info.get("name", "Unknown")
+            name = technique_info.get("name", f"Technique {technique_id}")
             tactic = technique_info.get("tactic", "Unknown")
             description = technique_info.get("description", "No description provided")
             mitigation = technique_info.get("mitigation", "No mitigation details provided")
-        # Fall back to our local database
-        elif technique_id in mitre_techniques:
-            tech = mitre_techniques[technique_id]
-            name = tech["name"]
-            tactic = tech["tactic"]
-            description = tech["description"]
-            mitigation = tech["mitigation"]
-        # No info available
         else:
-            name = "Unknown Technique"
+            # This should not happen as we should have fetched all techniques by now
+            name = f"Technique {technique_id}"
             tactic = "Unknown"
-            description = "This technique ID was not found in the local database or LLM-provided details."
+            description = "Information could not be retrieved. Please refer to the MITRE ATT&CK website."
             mitigation = "Refer to the MITRE ATT&CK website (https://attack.mitre.org/techniques/) for more information."
         
         # Add to output
@@ -197,10 +201,9 @@ def get_playbook_reference(incident_type: str) -> str:
     Include:
     1. An appropriate playbook name
     2. 5 key investigation steps (specific to this incident type)
-    3. 3-4 recommended tools for investigation
-    4. Clear escalation criteria
+    3. Clear escalation criteria
     
-    Format as a JSON object with keys: 'name', 'key_steps' (list), 'tools' (list), and 'escalation_criteria' (string).
+    Format as a JSON object with keys: 'name', 'key_steps' (list), and 'escalation_criteria' (string).
     """
     
     try:
@@ -220,7 +223,7 @@ def get_playbook_reference(incident_type: str) -> str:
         playbook = json.loads(json_str)
         
         # Validate the response has the expected structure
-        if not all(k in playbook for k in ['name', 'key_steps', 'tools', 'escalation_criteria']):
+        if not all(k in playbook for k in ['name', 'key_steps', 'escalation_criteria']):
             raise ValueError("LLM response missing required playbook fields")
         
         # Format the playbook reference
@@ -232,7 +235,6 @@ def get_playbook_reference(incident_type: str) -> str:
         for idx, step in enumerate(playbook['key_steps'], 1):
             formatted_playbook += f"  {idx}. {step}\n"
         
-        formatted_playbook += f"\nRecommended Tools: {', '.join(playbook['tools'])}\n"
         formatted_playbook += f"Escalation Criteria: {playbook['escalation_criteria']}\n"
         
         return formatted_playbook
@@ -250,7 +252,6 @@ def get_playbook_reference(incident_type: str) -> str:
             "Implement containment measures",
             "Determine root cause and impact"
         ]
-        generic_tools = ["SIEM", "EDR", "Log analysis tools", "Forensic utilities"]
         generic_criteria = "Critical systems affected, evidence of data exfiltration, or widespread impact"
         
         # Format the generic playbook
@@ -262,41 +263,9 @@ def get_playbook_reference(incident_type: str) -> str:
         for idx, step in enumerate(generic_steps, 1):
             formatted_playbook += f"  {idx}. {step}\n"
         
-        formatted_playbook += f"\nRecommended Tools: {', '.join(generic_tools)}\n"
         formatted_playbook += f"Escalation Criteria: {generic_criteria}\n"
         
         return formatted_playbook
-    
-    # Normalize incident type and look for best match
-    incident_type_lower = incident_type.lower() if incident_type else ""
-    
-    # Direct match
-    if incident_type_lower in playbooks:
-        playbook = playbooks[incident_type_lower]
-    # Partial match
-    else:
-        # Find the best match based on key terms
-        for key in playbooks:
-            if key in incident_type_lower:
-                playbook = playbooks[key]
-                break
-        else:
-            # Default to suspicious activity if no match
-            playbook = playbooks["suspicious_activity"]
-    
-    # Format the playbook reference
-    formatted_playbook = (
-        f"PLAYBOOK REFERENCE: {playbook['name']}\n"
-        f"Key Investigation Steps:\n"
-    )
-    
-    for idx, step in enumerate(playbook['key_steps'], 1):
-        formatted_playbook += f"  {idx}. {step}\n"
-    
-    formatted_playbook += f"\nRecommended Tools: {', '.join(playbook['tools'])}\n"
-    formatted_playbook += f"Escalation Criteria: {playbook['escalation_criteria']}\n"
-    
-    return formatted_playbook
 
 
 def extract_security_indicators(text: str) -> SecurityIndicators:

@@ -1,6 +1,9 @@
 @echo off
-echo Microsoft Sentinel Incident Analysis Tool
-echo ======================================
+echo Microsoft Sentinel Incident Analysis Tool - REAL-TIME DATA
+echo =====================================================
+echo.
+echo This tool fetches REAL-TIME security incident data directly from the Microsoft Sentinel API
+echo and analyzes it using a local LLM.
 echo.
 
 REM Check if Python is available
@@ -19,13 +22,13 @@ if %ERRORLEVEL% NEQ 0 (
 
 echo.
 echo Choose an operation:
-echo 1 - Fetch DNS TI incidents from last 7 days (export only)
-echo 2 - Fetch DNS TI incidents from last 7 days and analyze
-echo 3 - Fetch DNS TI incidents from last 30 days (export only)
-echo 4 - Fetch DNS TI incidents from last 30 days and analyze
-echo 5 - Fetch ALL incidents from last 7 days (export only)
-echo 6 - Fetch ALL incidents from last 7 days and analyze
-echo 7 - Custom query (you'll be prompted for options)
+echo 1 - Fetch DNS TI incidents from last 7 days (export only) - REAL-TIME
+echo 2 - Fetch DNS TI incidents from last 7 days and analyze - REAL-TIME
+echo 3 - Fetch DNS TI incidents from last 30 days (export only) - REAL-TIME
+echo 4 - Fetch DNS TI incidents from last 30 days and analyze - REAL-TIME
+echo 5 - Fetch ALL incidents from last 7 days (export only) - REAL-TIME
+echo 6 - Fetch ALL incidents from last 7 days and analyze - REAL-TIME
+echo 7 - Custom query (you'll be prompted for options) - REAL-TIME
 echo.
 
 set /p choice=Enter your choice (1-7): 
@@ -44,7 +47,7 @@ if "%choice%"=="1" (
     python "01 Test Connections/01_test_security_incidents.py" --days 7 --all-incidents --analyze
 ) else if "%choice%"=="7" (
     echo.
-    echo Custom Query Configuration:
+    echo Custom Query Configuration (REAL-TIME):
     echo.
     set /p days=Days back to search (e.g., 7, 14, 30): 
     
@@ -63,7 +66,7 @@ if "%choice%"=="1" (
     )
     
     echo.
-    echo Running custom query: %days% days back, DNS filter: %filter_option%, Analysis: %analyze_option%
+    echo Running REAL-TIME query: %days% days back, DNS filter: %filter_option%, Analysis: %analyze_option%
     python "01 Test Connections/01_test_security_incidents.py" --days %days% %filter% %analyze%
 ) else (
     echo Invalid choice. Please run again and select a number from 1-7.

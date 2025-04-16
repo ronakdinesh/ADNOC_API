@@ -7,6 +7,7 @@ import os
 import adal
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import traceback
 
 # Add path to the parent directory to import the LLM analysis module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -152,9 +153,13 @@ def export_to_excel(incidents, output_file=None):
     # Convert to DataFrame
     df = pd.DataFrame(incidents)
     
+    # Add a metadata row with the current timestamp to confirm real-time API access
+    fetch_time = datetime.now()
+    fetch_time_str = fetch_time.strftime("%Y-%m-%d %H:%M:%S")
+    
     # Generate default filename if not provided
     if not output_file:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = fetch_time.strftime("%Y%m%d_%H%M%S")
         output_file = f"security_incidents_{timestamp}.xlsx"
     
     # Ensure output directory exists
@@ -164,9 +169,21 @@ def export_to_excel(incidents, output_file=None):
     
     # Save to Excel
     df.to_excel(output_file, index=False)
-    print(f"Successfully exported {len(incidents)} incidents to {output_file}")
     
-    return output_file
+    # Add metadata about when the incidents were fetched
+    print(f"\nREAL-TIME CONFIRMATION:")
+    print(f"Security incidents fetched from Sentinel API on: {fetch_time_str}")
+    print(f"Data is current as of API response time")
+    if incidents:
+        most_recent = max([pd.to_datetime(incident.get('TimeGenerated', fetch_time_str)) 
+                           for incident in incidents if 'TimeGenerated' in incident], 
+                          default=fetch_time)
+        print(f"Most recent incident timestamp: {most_recent}")
+    
+    print(f"\nSuccessfully exported {len(incidents)} incidents to {output_file}")
+    
+    # Add fetch time to return value for use in analysis
+    return output_file, fetch_time
 
 def main():
     parser = argparse.ArgumentParser(description="Fetch security incidents from Microsoft Sentinel and analyze with LLM")
@@ -195,7 +212,13 @@ def main():
         return
     
     # Export to Excel
-    excel_path = export_to_excel(incidents, args.output)
+    excel_result = export_to_excel(incidents, args.output)
+    
+    if isinstance(excel_result, tuple):
+        excel_path, fetch_time = excel_result
+    else:
+        excel_path = excel_result
+        fetch_time = datetime.now()
     
     if not excel_path:
         print("Failed to export incidents. Exiting.")
@@ -209,11 +232,19 @@ def main():
             output_dir = os.path.dirname(excel_path) or "."
             os.makedirs(os.path.join(output_dir, "analysis"), exist_ok=True)
             
-            # Call the analyze_security_incidents function
-            analyze_security_incidents(excel_path)
+            # Call the analyze_security_incidents function with fetch time
+            if 'analyze_security_incidents' in globals():
+                # Direct import case
+                analyze_security_incidents(excel_path, fetch_time=fetch_time)
+            else:
+                # Module import case
+                from llm_read_security_incidents import analyze_security_incidents
+                analyze_security_incidents(excel_path, fetch_time=fetch_time)
+                
             print("\nAnalysis complete. Check the generated text files for results.")
         except Exception as e:
             print(f"Error running LLM analysis: {str(e)}")
+            traceback.print_exc()
 
 if __name__ == "__main__":
     print("\nMicrosoft Sentinel Incident Retrieval and Analysis Tool")

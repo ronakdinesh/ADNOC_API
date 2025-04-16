@@ -2,15 +2,16 @@ import pandas as pd
 import os
 import json
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional, Union, Set
+from typing import List, Dict, Any, Optional, Union, Set, Callable, TypeVar, cast
 import re
 import traceback
 import ollama  # Using ollama client directly
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator, ValidationInfo
 import requests  # Added for API calls
 import adal      # Added for Azure AD Authentication
 from dotenv import load_dotenv # Added for environment variables
 from tabulate import tabulate # Added for formatting log output
+import pydantic
 
 # Load environment variables from .env file
 load_dotenv()
@@ -59,17 +60,143 @@ else:
 # Using LLM at runtime to fetch MITRE ATT&CK technique information instead of hardcoding
 
 class IncidentAnalysisOutput(BaseModel):
-    threat_details: Union[str, Dict[str, Any]]
-    significance: Union[str, Dict[str, Any]]
-    recommended_actions: List[str]
-    summary: Union[str, Dict[str, Any]]
-    attack_techniques: List[str]
-    technique_details: Optional[Dict[str, Dict[str, str]]] = {}
-    severity_assessment: Union[str, Dict[str, Any]]
-    next_steps_for_l1: List[str]
-    time_sensitivity: Union[str, Dict[str, Any]]
-    incident_type: Union[str, Dict[str, Any]]
-    potential_impact: Optional[Union[str, Dict[str, Any]]] = "Not assessed"
+    # Add new fields for enhanced report
+    executive_summary: str = Field(default="", description="A 2-3 sentence executive summary of incident criticality, impact, and required actions")
+    severity_indicator: str = Field(default="Medium", description="Simple severity indicator (Critical/High/Medium/Low)")
+    correlation_matrix: Dict[str, List[Dict[str, Any]]] = Field(default_factory=dict, description="Matrix showing which logs directly support incident findings")
+    attack_chain: List[Dict[str, Any]] = Field(default_factory=list, description="Chronological reconstruction of attack with MITRE mapping")
+    risk_score: Dict[str, Any] = Field(default_factory=dict, description="Standardized risk assessment combining threat, asset value, and exposure")
+    business_impact: Dict[str, Any] = Field(default_factory=dict, description="Assessment of business impact based on affected systems")
+    
+    # Existing fields with default values to prevent missing field errors
+    threat_details: Union[str, Dict[str, Any]] = Field(default="Not provided", description="Details about the identified threat")
+    significance: Union[str, Dict[str, Any]] = Field(default="Not provided", description="Significance of the findings")
+    recommended_actions: List[str] = Field(default_factory=list, description="Recommended actions to take")
+    summary: Union[str, Dict[str, Any]] = Field(default="Not provided", description="Summary of the incident")
+    attack_techniques: List[str] = Field(default_factory=list, description="MITRE ATT&CK techniques identified")
+    technique_details: Dict[str, Dict[str, str]] = Field(default_factory=dict, description="Details about identified MITRE ATT&CK techniques")
+    severity_assessment: Union[str, Dict[str, Any]] = Field(default="Not provided", description="Assessment of the incident severity")
+    next_steps_for_l1: List[str] = Field(default_factory=list, description="Next steps for L1 analyst")
+    time_sensitivity: Union[str, Dict[str, Any]] = Field(default="Not provided", description="Time sensitivity of the incident")
+    incident_type: Union[str, Dict[str, Any]] = Field(default="Unknown", description="Type of security incident")
+    potential_impact: Union[str, Dict[str, Any]] = Field(default="Not assessed", description="Potential impact of the incident")
+    
+    @model_validator(mode='before')
+    @classmethod
+    def validate_and_transform_input(cls, data: Any) -> Dict[str, Any]:
+        """Validate and transform the input data for proper Pydantic validation."""
+        # If not a dict, can't process
+        if not isinstance(data, dict):
+            return data
+            
+        # Create a copy to avoid modifying the input directly
+        cleaned_data = data.copy()
+        
+        # Ensure all required fields are present with fallback values
+        required_fields = {
+            "threat_details": "Not provided",
+            "significance": "Not provided", 
+            "recommended_actions": [],
+            "summary": "Not provided",
+            "attack_techniques": [],
+            "severity_assessment": "Not provided",
+            "next_steps_for_l1": [],
+            "time_sensitivity": "Not provided",
+            "incident_type": "Unknown"
+        }
+        
+        for field, default_value in required_fields.items():
+            if field not in cleaned_data:
+                cleaned_data[field] = default_value
+        
+        # Fix risk_score if it's not a dict (handling the specific error)
+        if 'risk_score' in cleaned_data and not isinstance(cleaned_data['risk_score'], dict):
+            score = cleaned_data['risk_score']
+            if isinstance(score, (int, float)):
+                print(f"Converting risk_score from {type(score).__name__} to dict")
+                cleaned_data['risk_score'] = {'overall_score': int(score)}
+            elif isinstance(score, str) and score.isdigit():
+                print("Converting risk_score from str to dict")
+                cleaned_data['risk_score'] = {'overall_score': int(score)}
+            else:
+                 # Fallback if conversion is not obvious
+                 cleaned_data['risk_score'] = {'overall_score': 0, 'details': str(score)}
+        
+        # Fix business_impact if it's not a dict (handling the specific error)
+        if 'business_impact' in cleaned_data and not isinstance(cleaned_data['business_impact'], dict):
+            impact = cleaned_data['business_impact']
+            if isinstance(impact, str):
+                print("Converting business_impact from str to dict")
+                cleaned_data['business_impact'] = {'description': impact}
+            else:
+                # Fallback for other types
+                cleaned_data['business_impact'] = {'description': str(impact)}
+        
+        # Fix correlation_matrix structure - this is specifically handling the errors shown
+        if 'correlation_matrix' in cleaned_data:
+            matrix = cleaned_data['correlation_matrix']
+            
+            # If it's not a dict, try to fix it
+            if not isinstance(matrix, dict):
+                if isinstance(matrix, list):
+                    # Convert list to dict with default keys
+                    fixed_matrix = {}
+                    for i, item in enumerate(matrix):
+                        key = f"Finding {i+1}"
+                        if isinstance(item, dict) and 'finding' in item:
+                            key = item['finding']
+                            # Keep it as is if it's already a valid dict
+                            fixed_matrix[key] = [item]
+                        else:
+                            # Create proper dict structure for string items
+                            fixed_matrix[key] = [{"log_entry": str(item), "timestamp": "Unknown"}]
+                    cleaned_data['correlation_matrix'] = fixed_matrix
+                else:
+                    # Default empty dict if not a list or dict
+                    cleaned_data['correlation_matrix'] = {}
+            else:
+                # It's a dict but we need to ensure each value is a list of dicts
+                fixed_matrix = {}
+                for key, value in matrix.items():
+                    if isinstance(value, list):
+                        # Ensure each item in the list is a dict
+                        fixed_items = []
+                        for item in value:
+                            if isinstance(item, dict):
+                                fixed_items.append(item)
+                            else:
+                                # Convert string/primitive items to dicts
+                                fixed_items.append({"log_entry": str(item), "timestamp": "Unknown"})
+                        fixed_matrix[key] = fixed_items
+                    else:
+                        # If value is not a list, make it a list with one dict item
+                        fixed_matrix[key] = [{"log_entry": str(value), "timestamp": "Unknown"}]
+                
+                cleaned_data['correlation_matrix'] = fixed_matrix
+                
+        # Ensure attack_chain items have all required fields
+        if 'attack_chain' in cleaned_data and isinstance(cleaned_data['attack_chain'], list):
+            fixed_chain = []
+            for step in cleaned_data['attack_chain']:
+                if not isinstance(step, dict):
+                    # Convert non-dict steps to dicts
+                    fixed_chain.append({
+                        "timestamp": "Unknown",
+                        "description": str(step),
+                        "technique": "Unknown",
+                        "evidence": "None provided"
+                    })
+                else:
+                    # Ensure required keys exist
+                    fixed_step = step.copy()
+                    for field in ["timestamp", "description", "technique", "evidence"]:
+                        if field not in fixed_step:
+                            fixed_step[field] = "Unknown" if field != "evidence" else "None provided"
+                    fixed_chain.append(fixed_step)
+            
+            cleaned_data['attack_chain'] = fixed_chain
+            
+        return cleaned_data
 
 
 class SecurityIndicators(BaseModel):
@@ -82,6 +209,10 @@ class SecurityIndicators(BaseModel):
     urls: List[str] = Field(default=[], description="URLs found in the incident")
     internal_ips: List[str] = Field(default=[], description="Internal IP addresses")
     external_ips: List[str] = Field(default=[], description="External IP addresses")
+    user_domain_access: Dict[str, List[Dict[str, Any]]] = Field(
+        default_factory=dict, 
+        description="Map of domains to users who accessed them with timestamps and activity details"
+    )
 
 
 def get_mitre_attack_info(technique_ids: List[str], technique_details: Dict[str, Dict[str, str]] = None) -> str:
@@ -613,16 +744,23 @@ def format_log_summary(logs: List[Dict[str, Any]], limit: int = 10) -> str:
 
     return summary
 
-def summarize_user_domain_activity(logs: List[Dict[str, Any]], incident_domains: List[str]) -> str:
-    """Analyze fetched logs to identify which users interacted with specific incident domains."""
+def summarize_user_domain_activity(logs: List[Dict[str, Any]], incident_domains: List[str]) -> tuple:
+    """
+    Analyze fetched logs to identify which users interacted with specific incident domains.
+    Returns both a summary text and structured data for tracking user-domain relationships.
+    """
     if not logs or not incident_domains:
-        return "User-Domain Activity: No logs or incident domains provided for analysis.\n"
+        return "User-Domain Activity: No logs or incident domains provided for analysis.\n", {}
 
     # Normalize incident domains for easier matching (lowercase)
     incident_domains_lower = {domain.lower() for domain in incident_domains if domain}
     
     # Dictionary to store findings: {domain -> set(usernames)}
     domain_user_map = {domain: set() for domain in incident_domains_lower}
+    
+    # Enhanced tracking - store detailed information about each access: {domain -> [{user, timestamp, action, source_ip, etc}]}
+    domain_user_details = {domain: [] for domain in incident_domains_lower}
+    
     found_activity = False
 
     for log in logs:
@@ -632,34 +770,56 @@ def summarize_user_domain_activity(logs: List[Dict[str, Any]], incident_domains:
         log_text = f"{log_url} {log_dest_host}".lower() # Combine and lower for searching
         
         # Extract user (prioritize SourceUserName)
-        user = log.get('SourceUserName')
-        # Add fallbacks if needed, e.g., log.get('UserName') or parsing other fields
+        user = log.get('SourceUserName', log.get('UserName', 'Unknown User'))
+        
+        # Extract timestamp
+        timestamp = log.get('TimeGenerated', 'Unknown Time')
+        
+        # Extract action 
+        action = log.get('DeviceAction', log.get('SimplifiedDeviceAction', log.get('Activity', 'Unknown Action')))
+        
+        # Extract source IP
+        source_ip = log.get('SourceIP', 'Unknown Source')
         
         # Check if any incident domain is present in the log's URL/DestHost
         for domain in incident_domains_lower:
             if domain in log_text:
                 found_activity = True
-                if user and user != 'N/A': # Only add if user is identified
+                
+                # Add to simple domain-user map
+                if user and user != 'N/A': 
                     domain_user_map[domain].add(user)
-                # Even if no user found, we know there was activity for this domain
-                elif not domain_user_map[domain]: # Add a placeholder if no user found yet for this domain
-                     domain_user_map[domain].add("Activity observed (User N/A)") 
+                elif not domain_user_map[domain]:
+                    domain_user_map[domain].add("Activity observed (User N/A)") 
+                
+                # Add detailed access information
+                domain_user_details[domain].append({
+                    'user': user if user and user != 'N/A' else 'Unknown User',
+                    'timestamp': timestamp,
+                    'action': action,
+                    'source_ip': source_ip,
+                    'details': log_text[:100] + ('...' if len(log_text) > 100 else '')
+                })
 
     # Format the summary string
     summary_lines = ["User Activity Involving Incident Domains (from log sample):", "-----------------------------------------------------------"]
     if not found_activity:
-         summary_lines.append("No specific activity involving incident domains found in the log sample.")
+        summary_lines.append("No specific activity involving incident domains found in the log sample.")
     else:
         for domain, users in domain_user_map.items():
             if users:
                 user_str = ", ".join(sorted(list(users)))
                 summary_lines.append(f"- Domain '{domain}': Associated users/activity: {{{user_str}}}")
+                
+                # Add detailed accesses if available
+                if domain_user_details[domain]:
+                    for i, access in enumerate(sorted(domain_user_details[domain], 
+                                                  key=lambda x: x.get('timestamp', ''), reverse=True)[:5]):  # Show most recent 5
+                        summary_lines.append(f"  Access {i+1}: User '{access['user']}' at {access['timestamp']} - {access['action']}")
             else:
-                 # This case might occur if the domain was an indicator but no matching logs were found/processed
-                 # Or if activity was seen but no user could be identified AND the placeholder wasn't added (shouldn't happen with current logic)
-                 summary_lines.append(f"- Domain '{domain}': No associated user activity found in log sample.") 
-                 
-    return "\n".join(summary_lines) + "\n"
+                summary_lines.append(f"- Domain '{domain}': No associated user activity found in log sample.") 
+                
+    return "\n".join(summary_lines) + "\n", domain_user_details
 
 def analyze_comments(comments: List[str]) -> Dict[str, Any]:
     """Analyze incident comments to extract raw text and basic stats."""
@@ -935,9 +1095,12 @@ def analyze_incident_context(incident_data: pd.DataFrame, all_incidents: Dict[st
     # --- Fetch Relevant Logs ---
     fetched_logs = fetch_relevant_logs(first_detected_dt.strftime('%Y-%m-%dT%H:%M:%SZ'), last_updated_dt.strftime('%Y-%m-%dT%H:%M:%SZ'), indicators, limit=100)
     log_summary = format_log_summary(fetched_logs, limit=10) # Display top 10 in summary table
+    
     # --- Analyze User-Domain Activity --- 
-    user_domain_summary = summarize_user_domain_activity(fetched_logs, indicators.domains)
-    # --- End Log Fetching & User Analysis ---
+    user_domain_summary, user_domain_details = summarize_user_domain_activity(fetched_logs, indicators.domains)
+    
+    # Add the user domain details to the indicators object
+    indicators.user_domain_access = user_domain_details
     
     # Check domain reputation with VirusTotal if available
     vt_results_text = "VirusTotal integration not available."
@@ -1048,11 +1211,24 @@ def analyze_incident_context(incident_data: pd.DataFrame, all_incidents: Dict[st
         f"Comments:\n{comments_text if comments_text else 'No comments available.'}"
     )
 
-    # Construct the prompt for the LLM
+    # Construct the prompt for the LLM with clearer format instructions
     prompt = (
-        f"You are an experienced L1 SOC analyst reviewing security incidents. Your task is to provide preliminary analysis and triage recommendations.\n\n"
+        f"You are an experienced L1 SOC analyst reviewing security incidents. Your task is to provide comprehensive analysis and triage recommendations.\n\n"
         f"Analyze the following security incident data AND the provided sample of relevant raw logs. "
         f"Focus on correlating information between the incident details and the logs. Identify key events observed in the logs (e.g., specific connections, actions, source/destination details related to the incident indicators). "
+        
+        # New instructions for enhanced report components with clearer format specifications
+        f"Structure your analysis with the following new components:\n\n"
+        
+        f"1. EXECUTIVE SUMMARY: Begin with a concise 2-3 sentence executive summary that clearly states incident criticality, business impact, and required immediate actions. Include a severity indicator (Critical/High/Medium/Low).\n\n"
+        
+        f"2. CORRELATION MATRIX: Create a mapping between specific log entries and security findings. For each major finding, list the exact log entries (with timestamps) that support this conclusion. Format as a structured dictionary mapping finding names to lists of evidence entries.\n\n"
+        
+        f"3. ATTACK CHAIN RECONSTRUCTION: Develop a chronological step-by-step reconstruction of the attack based on the logs and incident data. Each step should be mapped to a MITRE ATT&CK technique and include specific supporting evidence with timestamps.\n\n"
+        
+        f"4. RISK-BASED ASSESSMENT: Provide a standardized risk score (scale 1-100) combining threat severity, asset value, and exposure factors. Include business impact assessment that specifies which business functions are affected and the operational/financial implications.\n\n"
+        
+        # Original instructions with format clarification
         f"Provide a structured analysis covering threat details (explain WHAT activity was observed in logs/data), significance (justify the level based on evidence), potential MITRE ATT&CK techniques (justify linkage to evidence), potential impact (what could happen if malicious), recommended immediate actions for L1, and severity assessment. "
         f"Be specific about what happened, who was targeted, what systems were involved, and what the attacker was trying to accomplish based ONLY on the provided information (incident data AND logs).\n\n"
         f"Pay special attention to the VirusTotal domain analysis results AND the raw log sample for corroborating evidence or additional context.\n\n"
@@ -1068,7 +1244,17 @@ def analyze_incident_context(incident_data: pd.DataFrame, all_incidents: Dict[st
         f"Think like a security analyst: What is the likely threat? How severe is it? What immediate actions should be taken? What additional information is needed? How time-sensitive is the response needed? \n"
         f"**Crucially, justify your analysis, recommended actions, and next steps by referencing specific, relevant details observed in the 'Relevant Raw Log Sample' whenever possible.** Generic recommendations are less helpful than those grounded in observed evidence. For example, if recommending a block, specify WHAT should be blocked (IP, URL, etc.) based on the log evidence. If suggesting investigation, mention WHICH user, host, or activity from the logs requires scrutiny.\n\n"
         f"When identifying MITRE ATT&CK techniques, please provide technique IDs like T1566 (Phishing) where applicable. For each technique you identify, provide a 'technique_details' dictionary with name, tactic, description and mitigation information for that technique - this is crucial as your information will be used directly in the report. Also, briefly explain WHY you chose each technique based on the incident data or logs.\n\n"
-        f"Provide the analysis as a JSON object with keys: 'threat_details', 'significance', 'recommended_actions' (as a list of actionable, evidence-based strings), 'summary', 'attack_techniques' (as a list of strings like 'T1566', 'T1078'), 'technique_details' (as a nested dictionary with technique IDs as keys and details dictionaries as values), 'severity_assessment', 'next_steps_for_l1' (as a list of actionable, evidence-based strings), 'time_sensitivity' (how urgent this incident is), 'incident_type' (classification of incident - e.g. malware, phishing, unauthorized access), and 'potential_impact' (brief assessment of potential consequences)."
+        
+        # Add FORMAT REQUIREMENTS section with much clearer instructions
+        f"FORMAT REQUIREMENTS - FOLLOW EXACTLY:\n"
+        f"- The response MUST include ALL of these fields: executive_summary, severity_indicator, correlation_matrix, attack_chain, risk_score, business_impact, threat_details, significance, recommended_actions, summary, attack_techniques, technique_details, severity_assessment, next_steps_for_l1, time_sensitivity, incident_type, potential_impact\n"
+        f"- 'correlation_matrix' MUST be a dictionary where each key is a finding name, and each value is an ARRAY of OBJECTS. Each object MUST have 'log_entry' and 'timestamp' fields.\n"
+        f"- Example correlation_matrix format: {{'Suspicious Domain Access': [{{'log_entry': 'User accessed malicious domain', 'timestamp': '2023-04-15T12:34:56Z'}}]}}\n"
+        f"- 'attack_chain' MUST be an array of objects, each with 'timestamp', 'description', 'technique', and 'evidence' fields\n"
+        f"- DO NOT use string formatting like 'Access 1:' inside correlation_matrix values - each item must be a proper JSON object\n"
+        f"- 'recommended_actions' and 'next_steps_for_l1' MUST be arrays of strings, not objects or formatted text\n"
+        
+        f"Provide the analysis as a JSON object with keys for both the new components (executive_summary, severity_indicator, correlation_matrix, attack_chain, risk_score, business_impact) and the original fields (threat_details, significance, recommended_actions, summary, attack_techniques, technique_details, severity_assessment, next_steps_for_l1, time_sensitivity, incident_type, and potential_impact)."
     )
 
     analysis_content = "Analysis could not be generated."
@@ -1090,77 +1276,115 @@ def analyze_incident_context(incident_data: pd.DataFrame, all_incidents: Dict[st
         json_str = response['message']['content']
         print(f"Response received from model. Parsing JSON...")
 
-        # Parse the JSON string (remove regex fallback)
+        # Add more robust error handling for parsing and validation
         try:
             analysis_result = json.loads(json_str)
-
-            # --- Pre-validation Type Conversion and Defaulting ---
-            # 1. Convert unexpected simple types (int, float) from LLM to string for fields expecting str or dict
-            fields_to_convert = [
-                'threat_details', 'significance', 'summary', 
-                'severity_assessment', 'time_sensitivity', 'incident_type',
-                'potential_impact'
-            ]
-            for field in fields_to_convert:
-                if field in analysis_result:
-                    value = analysis_result[field]
-                    if isinstance(value, (int, float, bool)) or value is None:
-                         print(f"Warning: Converting LLM output field '{field}' from type {type(value).__name__} to string.")
-                         analysis_result[field] = str(value)
-            
-            # 2. Add default values for required fields if missing from LLM response
-            required_fields_defaults = {
-                "threat_details": "Not Provided",
-                "significance": "Not Provided",
-                "recommended_actions": [],
-                "summary": "Not Provided",
-                "attack_techniques": [],
-                "severity_assessment": "Not Provided",
-                "next_steps_for_l1": [],
-                "time_sensitivity": "Not Provided",
-                "incident_type": "Unclassified",
-                "potential_impact": "Not assessed"
-            }
-            for field, default_value in required_fields_defaults.items():
-                if field not in analysis_result:
-                    print(f"Warning: Required field '{field}' missing from LLM response. Using default value: {default_value}")
-                    analysis_result[field] = default_value
-            
-            # 3. Ensure list fields are actually lists if they exist but are wrong type (e.g., string)
-            list_fields = ['recommended_actions', 'attack_techniques', 'next_steps_for_l1']
-            for field in list_fields:
-                 if field in analysis_result and not isinstance(analysis_result[field], list):
-                     print(f"Warning: Field '{field}' expected a list but got {type(analysis_result[field]).__name__}. Attempting correction or defaulting to empty list.")
-                     # Attempt basic correction if it's a string that looks like a list (optional, can be risky)
-                     # Simple default: analysis_result[field] = []
-                     if isinstance(analysis_result[field], str):
-                         # Basic check for list-like string, more robust parsing might be needed
-                         if analysis_result[field].startswith('[') and analysis_result[field].endswith(']'):
-                             try:
-                                 # Attempt to parse string as JSON list
-                                 potential_list = json.loads(analysis_result[field].replace("'", '"')) # Replace single with double quotes
-                                 if isinstance(potential_list, list):
-                                     analysis_result[field] = potential_list
-                                 else:
-                                     analysis_result[field] = [] # Default if not a list after parsing
-                             except json.JSONDecodeError:
-                                 analysis_result[field] = [] # Default if parsing fails
-                         else:
-                              analysis_result[field] = [] # Default if not list-like string
-                     else:
-                         analysis_result[field] = [] # Default if not a string or list
-
-            # --- End Pre-validation ---
-
+            print(f"Successfully parsed JSON response from LLM")
         except json.JSONDecodeError as e:
             print(f"Failed to decode JSON response even with format='json': {e}")
             print(f"Raw response content:\n{json_str}")
-            raise ValueError("Ollama response was not valid JSON despite format='json' instruction")
-
-        # Validate against our Pydantic model
-        validated_result = IncidentAnalysisOutput(**analysis_result)
-        print(f"Analysis generated successfully for Incident #{incident_number}.")
-
+            
+            # Attempt error recovery by looking for JSON within the response
+            try:
+                # Find anything that looks like JSON using regex
+                json_match = re.search(r'(\{.*\})', json_str, re.DOTALL)
+                if json_match:
+                    potential_json = json_match.group(1)
+                    analysis_result = json.loads(potential_json)
+                    print(f"Recovered JSON from partial response")
+                else:
+                    raise ValueError("No valid JSON found in response")
+            except Exception as recovery_error:
+                print(f"Recovery attempt failed: {recovery_error}")
+                raise ValueError("Ollama response was not valid JSON despite format='json' instruction")
+        
+        # Try to validate with our model
+        try:
+            # Validate against our Pydantic model
+            validated_result = IncidentAnalysisOutput(**analysis_result)
+            print(f"Analysis generated and validated successfully for Incident #{incident_number}.")
+        except pydantic.ValidationError as e:
+            print(f"Validation error: {str(e)}")
+            print("Attempting to correct data format issues...")
+            
+            # Apply additional fixes for correlation_matrix issues seen in the error logs
+            if 'correlation_matrix' in analysis_result:
+                print("Fixing correlation_matrix format issues...")
+                fixed_matrix = {}
+                correlation_data = analysis_result.get('correlation_matrix', {})
+                
+                if isinstance(correlation_data, dict):
+                    for finding, evidence_list in correlation_data.items():
+                        fixed_evidence = []
+                        
+                        if isinstance(evidence_list, list):
+                            for item in evidence_list:
+                                if isinstance(item, str) and item.startswith("Access"):
+                                    # Parse the Access string into a proper object
+                                    parts = item.split(":", 1)
+                                    if len(parts) > 1:
+                                        user_part = parts[1].strip()
+                                        # Try to extract username and timestamp
+                                        user_match = re.search(r"User '([^']+)'", user_part)
+                                        time_match = re.search(r"at (.+?) -", user_part)
+                                        action_match = re.search(r" - (.+)$", user_part)
+                                        
+                                        user = user_match.group(1) if user_match else "Unknown User"
+                                        timestamp = time_match.group(1) if time_match else "Unknown Time"
+                                        action = action_match.group(1) if action_match else "Unknown Action"
+                                        
+                                        fixed_evidence.append({
+                                            "log_entry": item,
+                                            "timestamp": timestamp,
+                                            "user": user,
+                                            "action": action
+                                        })
+                                    else:
+                                        fixed_evidence.append({"log_entry": item, "timestamp": "Unknown"})
+                                elif isinstance(item, str):
+                                    # Convert plain strings to proper format
+                                    fixed_evidence.append({"log_entry": item, "timestamp": "Unknown"})
+                                else:
+                                    # Keep dicts as is if they exist
+                                    fixed_evidence.append(item)
+                        elif isinstance(evidence_list, str):
+                            # If the whole evidence list is a string
+                            fixed_evidence = [{"log_entry": evidence_list, "timestamp": "Unknown"}]
+                        else:
+                            # Handle any other type
+                            fixed_evidence = [{"log_entry": str(evidence_list), "timestamp": "Unknown"}]
+                            
+                        fixed_matrix[finding] = fixed_evidence
+                        
+                    analysis_result['correlation_matrix'] = fixed_matrix
+                else:
+                    # Handle the case where correlation_matrix isn't a dict at all
+                    analysis_result['correlation_matrix'] = {
+                        "Finding 1": [{"log_entry": "No structured data available", "timestamp": "Unknown"}]
+                    }
+            
+            # Add explicit defaults for missing fields 
+            required_fields = {
+                "threat_details": "Not provided",
+                "significance": "Not provided", 
+                "recommended_actions": [],
+                "summary": "Not provided",
+                "attack_techniques": [],
+                "severity_assessment": "Not provided",
+                "next_steps_for_l1": [],
+                "time_sensitivity": "Not provided",
+                "incident_type": "Unknown"
+            }
+            
+            for field, default_value in required_fields.items():
+                if field not in analysis_result:
+                    print(f"Adding missing required field: {field}")
+                    analysis_result[field] = default_value
+            
+            # Re-attempt validation after fixes
+            validated_result = IncidentAnalysisOutput(**analysis_result)
+            print("Successfully fixed validation issues")
+        
         # Get MITRE ATT&CK information if techniques were identified
         mitre_info = ""
         if validated_result.attack_techniques:
@@ -1239,8 +1463,60 @@ def analyze_incident_context(incident_data: pd.DataFrame, all_incidents: Dict[st
         if validated_result.next_steps_for_l1:
             l1_steps = "L1 ANALYST NEXT STEPS:\n" + "\n".join([f"* {step}" for step in validated_result.next_steps_for_l1]) + "\n\n"
 
+        # Format the output with new sections
+        # Start with the Executive Summary at the top
         analysis_content = (
+            f"EXECUTIVE SUMMARY:\n"
+            f"=================\n"
+            f"{validated_result.executive_summary}\n"
+            f"Severity: {validated_result.severity_indicator}\n\n"
+            
             f"{quick_assessment}\n\n"
+            
+            f"RISK ASSESSMENT:\n"
+            f"===============\n"
+            f"Risk Score: {validated_result.risk_score.get('overall_score', 'Not calculated')}/100\n"
+            f"Business Impact: {', '.join([f'{k}: {v}' for k, v in validated_result.business_impact.items()]) if validated_result.business_impact else 'Not assessed'}\n\n"
+            
+            f"ATTACK CHAIN RECONSTRUCTION:\n"
+            f"============================\n"
+        )
+        
+        # Add attack chain if available
+        if validated_result.attack_chain:
+            for idx, step in enumerate(validated_result.attack_chain, 1):
+                step_time = step.get('timestamp', 'Unknown time')
+                step_desc = step.get('description', 'Unknown activity')
+                step_tech = step.get('technique', 'No technique mapped')
+                step_evidence = step.get('evidence', 'No specific evidence')
+                
+                analysis_content += (
+                    f"Step {idx} [{step_time}]: {step_desc}\n"
+                    f"  MITRE Technique: {step_tech}\n"
+                    f"  Evidence: {step_evidence}\n\n"
+                )
+        else:
+            analysis_content += "Insufficient data to reconstruct attack chain\n\n"
+            
+        # Add correlation matrix if available
+        analysis_content += (
+            f"EVIDENCE CORRELATION MATRIX:\n"
+            f"============================\n"
+        )
+        
+        if validated_result.correlation_matrix:
+            for finding, evidence_list in validated_result.correlation_matrix.items():
+                analysis_content += f"Finding: {finding}\n"
+                for evidence in evidence_list:
+                    evidence_time = evidence.get('timestamp', 'Unknown time')
+                    evidence_desc = evidence.get('log_entry', 'No specific log entry')
+                    analysis_content += f"  [{evidence_time}] {evidence_desc}\n"
+                analysis_content += "\n"
+        else:
+            analysis_content += "No correlation matrix provided\n\n"
+        
+        # Continue with original sections
+        analysis_content += (
             f"THREAT DETAILS:\n* {threat_details_formatted}\n\n"
             f"SIGNIFICANCE:\n* {significance_formatted}\n\n"
             f"POTENTIAL IMPACT:\n* {validated_result.potential_impact or 'Not assessed'}\n\n"
@@ -1264,6 +1540,39 @@ def analyze_incident_context(incident_data: pd.DataFrame, all_incidents: Dict[st
                 f"----------------------------\n"
                 f"{vt_results_text}\n"
             )
+
+        # Add a dedicated USER-DOMAIN ACCESS ANALYSIS section to the report
+        # After the correlation matrix section in the report
+        analysis_content += (
+            f"USER-DOMAIN ACCESS ANALYSIS:\n"
+            f"===========================\n"
+        )
+        
+        # Add user-domain access details from our structured data
+        if indicators.user_domain_access and any(indicators.user_domain_access.values()):
+            for domain, accesses in indicators.user_domain_access.items():
+                if accesses:
+                    analysis_content += f"Domain: {domain}\n"
+                    # Sort accesses by timestamp (if available)
+                    sorted_accesses = sorted(accesses, 
+                                            key=lambda x: x.get('timestamp', 'Unknown Time'), 
+                                            reverse=True)
+                    
+                    for i, access in enumerate(sorted_accesses[:10]):  # Show top 10 recent accesses
+                        user = access.get('user', 'Unknown User')
+                        timestamp = access.get('timestamp', 'Unknown Time')
+                        action = access.get('action', 'Unknown Action')
+                        source = access.get('source_ip', 'Unknown Source')
+                        
+                        analysis_content += f"  {i+1}. User: {user} | Time: {timestamp} | Action: {action} | Source: {source}\n"
+                    
+                    # If there are more than 10 accesses, note there are more
+                    if len(accesses) > 10:
+                        analysis_content += f"     ... and {len(accesses) - 10} more access events\n"
+                    
+                    analysis_content += "\n"
+        else:
+            analysis_content += "No specific user-domain access events were identified in the logs.\n\n"
 
     except Exception as e:
         print(f"\nError generating analysis with LLM for incident {incident_number}: {e}")
@@ -1351,12 +1660,24 @@ def analyze_incident_context(incident_data: pd.DataFrame, all_incidents: Dict[st
 
     return analysis
 
-def analyze_security_incidents(excel_path: str, tenant_id: str = None) -> None:
+def analyze_security_incidents(excel_path: str, tenant_id: str = None, fetch_time: datetime = None) -> None:
     """Main function to analyze security incidents and their changes"""
     try:
         print(f"Reading Excel file: {excel_path}")
         df = pd.read_excel(excel_path)
         print(f"Successfully loaded the Excel file. Shape: {df.shape}")
+        
+        # Add real-time confirmation
+        if fetch_time:
+            fetch_time_str = fetch_time.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"\nREAL-TIME CONFIRMATION:")
+            print(f"Security incidents fetched from Sentinel API on: {fetch_time_str}")
+            print(f"Analysis is using real-time data as of this timestamp")
+        else:
+            # Estimate fetch time if not provided (for backwards compatibility)
+            fetch_time = datetime.now()
+            fetch_time_str = fetch_time.strftime("%Y-%m-%d %H:%M:%S")
+            print(f"\nNOTE: Using current analysis time as fetch timestamp: {fetch_time_str}")
         
         if tenant_id:
             df = df[df['TenantId'] == tenant_id]
@@ -1400,6 +1721,12 @@ def analyze_security_incidents(excel_path: str, tenant_id: str = None) -> None:
                     with open(output_path, 'w', encoding='utf-8') as f:
                         f.write(f"SECURITY INCIDENT ANALYSIS - #{incident_number}\n")
                         f.write("="*100 + "\n\n")
+                        
+                        # Add real-time data confirmation
+                        f.write(f"REAL-TIME ANALYSIS CONFIRMATION:\n")
+                        f.write(f"Security incidents fetched from Sentinel API on: {fetch_time_str}\n")
+                        f.write(f"Analysis time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                        
                         f.write(formatted_timeline + "\n\n")
                         f.write("SOC ANALYST L1 TRIAGE REPORT:\n") # Updated title in file
                         f.write("="*35 + "\n") # Adjusted length in file

@@ -202,3 +202,12 @@ if __name__ == "__main__":
     #     limit=50,
     #     device_vendor="Cisco"
     # ) 
+
+    print("\n2. Testing all security logs from the past day")
+    daily_logs = get_common_security_logs(
+        hours=24,  # Last day
+        limit=100  # Increasing limit to get more logs
+    )
+    if daily_logs:
+        display_logs(daily_logs)
+        export_to_excel(daily_logs) 

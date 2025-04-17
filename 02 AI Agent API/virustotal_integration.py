@@ -111,8 +111,19 @@ def analyze_domains(domains: List[str]) -> Dict[str, Dict]:
         if any(domain.endswith(suffix) for suffix in ['.microsoft.com', '.windows.com', '.office.com', '.azure.com', '.local']):
             continue
             
+        # Skip Microsoft service domains that aren't actually web domains (like Microsoft.OperationalInsights)
+        if domain.startswith('Microsoft.'):
+            logger.info(f"Skipping Microsoft service name (not a web domain): {domain}")
+            continue
+            
         # Check if domain is an IP address - these need different handling
         if all(c.isdigit() or c == '.' for c in domain):
+            continue
+            
+        # Validate domain format - must have at least one dot and valid TLD
+        parts = domain.split('.')
+        if len(parts) < 2 or len(parts[-1]) < 2:
+            logger.info(f"Skipping invalid domain format: {domain}")
             continue
             
         try:

@@ -15,6 +15,8 @@ import pydantic
 import argparse
 import sys
 import ast
+import numpy as np
+import asyncio
 
 # Load environment variables from .env file
 load_dotenv()
@@ -212,87 +214,55 @@ def get_mitre_attack_info(technique_ids: List[str], technique_details: Dict[str,
     # Get information for techniques that need it
     if techniques_needing_info:
         try:
-            # Configure ollama client with the right base URL
-            client = ollama.Client(host=OLLAMA_API_BASE)
-            
-            # Create a prompt asking for MITRE ATT&CK information
-            prompt = (
-                f"Provide information about the following MITRE ATT&CK techniques: {', '.join(techniques_needing_info)}.\n\n"
-                f"For each technique, provide the following in JSON format:\n"
-                f"- name: The name of the technique\n"
-                f"- tactic: The tactic(s) this technique belongs to\n"
-                f"- description: A brief description of the technique\n"
-                f"- mitigation: Recommended mitigations for this technique\n\n"
-                f"Format your response as a JSON object where keys are technique IDs and values are objects with the fields above."
-            )
-            
-            # Make the API call to Ollama
-            response = client.chat(
-                model=OLLAMA_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                stream=False,
-                format='json'
-            )
-            
-            # Extract and parse the JSON response
-            json_str = response['message']['content']
-            generated_techniques = json.loads(json_str)
-            
-            # If technique_details is None, initialize it
-            if technique_details is None:
-                technique_details = {}
+            async def get_technique_info():
+                # Use local_llm_integration instead of direct Ollama call
+                llm_client = await get_local_llm_client(model=OLLAMA_MODEL)
                 
-            # Add the generated techniques to our technique_details
-            for tech_id, tech_info in generated_techniques.items():
-                if tech_id not in technique_details:
-                    technique_details[tech_id] = tech_info
-                    
-        except Exception as e:
-            print(f"Error generating MITRE ATT&CK information: {str(e)}")
-            # If there's an error, create a generic placeholder for missing techniques
-            if technique_details is None:
-                technique_details = {}
+                # Create a prompt asking for MITRE ATT&CK information
+                prompt = (
+                    f"Provide information about the following MITRE ATT&CK techniques: {', '.join(techniques_needing_info)}.\n\n"
+                    f"For each technique, provide the following in JSON format:\n"
+                    f"- name: The name of the technique\n"
+                    f"- tactic: The tactic(s) this technique belongs to\n"
+                    f"- description: A brief description of the technique\n"
+                    f"- mitigation: One or two sentences on how to mitigate this technique\n\n"
+                    f"Return a valid JSON object with technique IDs as keys"
+                )
+                
+                # Get the response
+                result = await llm_client.generate_json(prompt=prompt)
+                return result
+                
+            # Run the async function
+            loop = asyncio.get_event_loop()
+            technique_info = loop.run_until_complete(get_technique_info())
             
-            for tech_id in techniques_needing_info:
-                if tech_id not in technique_details:
-                    technique_details[tech_id] = {
-                        "name": f"Technique {tech_id}",
-                        "tactic": "Unknown",
-                        "description": "Information could not be retrieved. Please refer to the MITRE ATT&CK website.",
-                        "mitigation": "Refer to the MITRE ATT&CK website (https://attack.mitre.org/techniques/) for more information."
-                    }
+            if isinstance(technique_info, dict) and not technique_info.get("error"):
+                # Format the information for display
+                info_text = "\nMITRE ATT&CK Techniques Identified:\n\n"
+                for tech_id, tech_data in technique_info.items():
+                    if isinstance(tech_data, dict):
+                        name = tech_data.get("name", "Unknown Technique")
+                        tactic = tech_data.get("tactic", "Unknown Tactic")
+                        description = tech_data.get("description", "No description available")
+                        mitigation = tech_data.get("mitigation", "No mitigation information available")
+                        
+                        info_text += f"• {tech_id}: {name}\n"
+                        info_text += f"  Tactic: {tactic}\n"
+                        info_text += f"  Description: {description}\n"
+                        info_text += f"  Mitigation: {mitigation}\n\n"
+                    else:
+                        info_text += f"• {tech_id}: Information unavailable\n\n"
+                
+                return info_text
+            else:
+                error_msg = technique_info.get("error", "Unknown error") if isinstance(technique_info, dict) else str(technique_info)
+                return f"\nError retrieving MITRE ATT&CK information: {error_msg}\n"
+                
+        except Exception as e:
+            return f"\nError processing MITRE ATT&CK information: {str(e)}\n"
     
-    # Format the info for each technique
-    formatted_info = "MITRE ATT&CK TECHNIQUES:\n"
-    
-    for technique_id in technique_ids:
-        # Clean up technique ID format
-        technique_id = technique_id.strip().upper()
-        if not technique_id.startswith("T"):
-            technique_id = f"T{technique_id}"
-        
-        # Get technique details
-        if technique_details and technique_id in technique_details:
-            technique_info = technique_details[technique_id]
-            name = technique_info.get("name", f"Technique {technique_id}")
-            tactic = technique_info.get("tactic", "Unknown")
-            description = technique_info.get("description", "No description provided")
-            mitigation = technique_info.get("mitigation", "No mitigation details provided")
-        else:
-            # This should not happen as we should have fetched all techniques by now
-            name = f"Technique {technique_id}"
-            tactic = "Unknown"
-            description = "Information could not be retrieved. Please refer to the MITRE ATT&CK website."
-            mitigation = "Refer to the MITRE ATT&CK website (https://attack.mitre.org/techniques/) for more information."
-        
-        # Add to output
-        formatted_info += (
-            f"[{technique_id}] {name} - {tactic}\n"
-            f"  Description: {description}\n"
-            f"  Mitigation: {mitigation}\n\n"
-        )
-    
-    return formatted_info
+    return "\nNo new MITRE ATT&CK techniques to retrieve information for.\n"
 
 
 def get_playbook_reference(incident_type: str) -> str:
@@ -3419,90 +3389,106 @@ def generate_soc_analyst_report(incident_data: Dict[str, Any], logs: List[Dict[s
     primary_user = indicators.users[0] if indicators.users else (top_users[0][0] if top_users else None)
     primary_device = top_devices[0][0] if top_devices else None
 
-    # 2. Call Ollama LLM
+    # 2. Call LocalLLM using the integration module
     try:
-        print("Generating SOC analyst report structure with Ollama...")
-        client = ollama.Client(host=OLLAMA_API_BASE)
-        response = client.chat(
-            model=OLLAMA_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            stream=False,
-            format="json"  # Request JSON output
-        )
-        response_content = response['message']['content']
-        print("Ollama response received.")
+        print("Generating SOC analyst report structure with local LLM...")
+        
+        async def generate_with_local_llm():
+            # Get LocalLLM client
+            llm_client = await get_local_llm_client(model=OLLAMA_MODEL)
+            
+            # Generate JSON response
+            system_prompt = "You are an expert SOC analyst providing detailed, actionable security incident analysis in JSON format."
+            response_data = await llm_client.generate_json(
+                prompt=prompt,
+                system_prompt=system_prompt,
+                schema=IncidentAnalysisOutput.model_json_schema()
+            )
+            return response_data
+        
+        # Run the async function
+        loop = asyncio.get_event_loop()
+        analysis_data = loop.run_until_complete(generate_with_local_llm())
+        print("Local LLM response received.")
 
+        # Create fallback actions and steps based on available data (Windows focused, matching user examples style)
+        fallback_actions = []
+        if primary_domain:
+            fallback_actions.append({
+                "description": f"Block domain {primary_domain} at Firewall/Proxy/DNS Filter levels."
+            })
+            fallback_actions.append({
+                "description": f"Check reputation of domain {primary_domain} using VirusTotal or other TI source."
+            })
+        if primary_ip:
+            fallback_actions.append({
+                "description": f"Block IP address {primary_ip} using Windows Firewall: `netsh advfirewall firewall add rule name=\"Block Incident IP {primary_ip}\" dir=in action=block remoteip={primary_ip}` (run for dir=out too)."
+            })
+        if primary_device:
+             fallback_actions.append({
+                "description": f"Isolate system {primary_device} from the network (via EDR, VLAN change, or port disable) to contain potential threat."
+            })
+        if primary_user:
+            fallback_actions.append({
+                "description": f"Monitor account {primary_user} closely for suspicious activity. Consider temporary disablement if high risk is confirmed."
+            })
+        fallback_actions.append({
+            "description": "Capture volatile memory and disk image from key involved system(s) for forensic analysis."
+        })
+        fallback_actions.append({
+            "description": "Escalate to Level 2 SOC or Incident Response team for deeper investigation."
+        })
+        
+        fallback_steps = []
+        if primary_domain:
+            fallback_steps.append({
+                "description": f"Review DNS logs (Windows Event Log or Sysmon ID 22) across endpoints for queries related to {primary_domain} or similar variations.",
+                "data_points": [f"Domain {primary_domain} identified as key indicator"]
+            })
+        if primary_ip:
+            ip_count = ip_counts.get(primary_ip, 0) if 'ip_counts' in locals() else 0
+            fallback_steps.append({
+                "description": f"Analyze firewall/network logs (e.g., using Sentinel KQL) for all traffic to/from IP {primary_ip} to identify communication patterns and scope.",
+                "data_points": [f"IP {primary_ip} observed {ip_count} times in log summary"]
+            })
+        if primary_user:
+            user_count = user_counts.get(primary_user, 0) if 'user_counts' in locals() else 0
+            fallback_steps.append({
+                "description": f"Audit Azure AD sign-in and UAL logs for user {primary_user}, focusing on unusual times, locations, or application access.",
+                "data_points": [f"User {primary_user} involved in {user_count} logged activities"]
+            })
+        if primary_device:
+            dev_count = device_counts.get(primary_device, 0) if 'device_counts' in locals() else 0
+            fallback_steps.append({
+                "description": f"Investigate process execution logs (Security Event ID 4688 or Sysmon ID 1) on host {primary_device} around the time of the incident.",
+                "data_points": [f"Device {primary_device} mentioned {dev_count} times in logs"]
+            })
+        fallback_steps.append({
+            "description": "Search EDR/Antivirus logs across the environment for alerts related to the identified indicators (domains, IPs, hashes).",
+            "data_points": ["Multiple indicators identified requiring environment-wide check"]
+        })
+        fallback_steps.append({
+            "description": "Analyze proxy logs for connections to identified malicious domains/URLs to understand user interaction.",
+             "data_points": [f"Indicators include domains/URLs: {str(indicators.domains)}, {str(indicators.urls)}"]
+        })
+        
         # 3. Parse and Validate with Pydantic
         try:
-            analysis_data = json.loads(response_content)
-            
-            # Create fallback actions and steps based on available data (Windows focused, matching user examples style)
-            fallback_actions = []
-            if primary_domain:
-                fallback_actions.append({
-                    "description": f"Block domain {primary_domain} at Firewall/Proxy/DNS Filter levels."
-                })
-                fallback_actions.append({
-                    "description": f"Check reputation of domain {primary_domain} using VirusTotal or other TI source."
-                })
-            if primary_ip:
-                fallback_actions.append({
-                    "description": f"Block IP address {primary_ip} using Windows Firewall: `netsh advfirewall firewall add rule name=\"Block Incident IP {primary_ip}\" dir=in action=block remoteip={primary_ip}` (run for dir=out too)."
-                })
-            if primary_device:
-                 fallback_actions.append({
-                    "description": f"Isolate system {primary_device} from the network (via EDR, VLAN change, or port disable) to contain potential threat."
-                })
-            if primary_user:
-                fallback_actions.append({
-                    "description": f"Monitor account {primary_user} closely for suspicious activity. Consider temporary disablement if high risk is confirmed."
-                })
-            fallback_actions.append({
-                "description": "Capture volatile memory and disk image from key involved system(s) for forensic analysis."
-            })
-            fallback_actions.append({
-                "description": "Escalate to Level 2 SOC or Incident Response team for deeper investigation."
-            })
-            
-            fallback_steps = []
-            if primary_domain:
-                fallback_steps.append({
-                    "description": f"Review DNS logs (Windows Event Log or Sysmon ID 22) across endpoints for queries related to {primary_domain} or similar variations.",
-                    "data_points": [f"Domain {primary_domain} identified as key indicator"]
-                })
-            if primary_ip:
-                ip_count = ip_counts.get(primary_ip, 0) if 'ip_counts' in locals() else 0
-                fallback_steps.append({
-                    "description": f"Analyze firewall/network logs (e.g., using Sentinel KQL) for all traffic to/from IP {primary_ip} to identify communication patterns and scope.",
-                    "data_points": [f"IP {primary_ip} observed {ip_count} times in log summary"]
-                })
-            if primary_user:
-                user_count = user_counts.get(primary_user, 0) if 'user_counts' in locals() else 0
-                fallback_steps.append({
-                    "description": f"Audit Azure AD sign-in and UAL logs for user {primary_user}, focusing on unusual times, locations, or application access.",
-                    "data_points": [f"User {primary_user} involved in {user_count} logged activities"]
-                })
-            if primary_device:
-                dev_count = device_counts.get(primary_device, 0) if 'device_counts' in locals() else 0
-                fallback_steps.append({
-                    "description": f"Investigate process execution logs (Security Event ID 4688 or Sysmon ID 1) on host {primary_device} around the time of the incident.",
-                    "data_points": [f"Device {primary_device} mentioned {dev_count} times in logs"]
-                })
-            fallback_steps.append({
-                "description": "Search EDR/Antivirus logs across the environment for alerts related to the identified indicators (domains, IPs, hashes).",
-                "data_points": ["Multiple indicators identified requiring environment-wide check"]
-            })
-            fallback_steps.append({
-                "description": "Analyze proxy logs for connections to identified malicious domains/URLs to understand user interaction.",
-                 "data_points": [f"Indicators include domains/URLs: {str(indicators.domains)}, {str(indicators.urls)}"]
-            })
+            # Check if we got an error from the LLM client
+            if isinstance(analysis_data, dict) and "error" in analysis_data:
+                print(f"Error from LLM client: {analysis_data['error']}")
+                analysis_data = {}  # Use empty dict to trigger fallbacks
             
             # Merge analysis_data with required fields potentially missing from LLM response
             merged_data = {
+                "incident_id": incident_data.get('incident_number', 'N/A'),
                 "executive_summary": analysis_data.get("executive_summary", "Security incident involving potentially suspicious network activity detected. Immediate actions required to contain potential threat by blocking indicators and isolating systems. Further investigation needed to determine full scope and impact."),
+                "severity": analysis_data.get("severity", incident_data.get("severity", "Medium")),
+                "incident_title": incident_data.get('title', 'N/A'),
                 "severity_indicator": analysis_data.get("severity_indicator", incident_data.get("severity", "Medium")),
                 "immediate_actions": analysis_data.get("immediate_actions", []) or fallback_actions[:5],  # Use fallbacks if empty, limit length
                 "future_steps": analysis_data.get("future_steps", []) or fallback_steps[:5],  # Use fallbacks if empty, limit length
+                "identified_techniques": analysis_data.get("identified_techniques", []),
                 "metrics_panel": indicators.metrics_panel if hasattr(indicators, 'metrics_panel') else {
                      "incident_number": incident_data.get('incident_number', 'N/A'),
                      "status": incident_data.get('status', 'N/A'),
@@ -3530,202 +3516,36 @@ def generate_soc_analyst_report(incident_data: Dict[str, Any], logs: List[Dict[s
             print("Pydantic validation successful.")
             return analysis_output
 
-        except json.JSONDecodeError:
-            print(f"LLM Error: Invalid JSON received:\n{response_content}")
+        except pydantic.ValidationError as e:
+            print(f"LLM Error: JSON does not match Pydantic model:\n{e}")
             # Create a fallback analysis with generic but useful recommendations
             fallback_analysis = IncidentAnalysisOutput(
+                incident_id=incident_data.get('incident_number', 'N/A'),
+                severity="Medium",
+                incident_title=incident_data.get('title', 'N/A'),
                 executive_summary="Security incident requiring investigation. Generated fallback recommendations due to LLM response error.",
                 severity_indicator="Medium",
                 immediate_actions=fallback_actions[:5],
-                future_steps=fallback_steps[:5]
-            )
-            return fallback_analysis
-        except pydantic.ValidationError as e:
-            print(f"LLM Error: JSON does not match Pydantic model:\n{e}\nReceived JSON:\n{response_content}")
-            # Create a fallback analysis with generic but useful recommendations
-            fallback_analysis = IncidentAnalysisOutput(
-                executive_summary="Security incident requiring investigation. Generated fallback recommendations due to LLM response error.",
-                severity_indicator="Medium", 
-                immediate_actions=fallback_actions[:5],
-                future_steps=fallback_steps[:5]
+                future_steps=fallback_steps[:5],
+                identified_techniques=[]
             )
             return fallback_analysis
 
     except Exception as e:
-        print(f"Error during Ollama call or processing: {str(e)}")
+        print(f"Error during LLM call or processing: {str(e)}")
         traceback.print_exc()
         # Create fallback recommendations
         fallback_analysis = IncidentAnalysisOutput(
+            incident_id=incident_data.get('incident_number', 'N/A'),
+            severity="Medium",
+            incident_title=incident_data.get('title', 'N/A'),
             executive_summary=f"Error in report generation. Using fallback recommendations.",
             severity_indicator="Medium",
             immediate_actions=fallback_actions[:5],
-            future_steps=fallback_steps[:5]
+            future_steps=fallback_steps[:5],
+            identified_techniques=[]
         )
         return fallback_analysis
-
-
-def format_soc_analyst_report(analysis_output: IncidentAnalysisOutput) -> str:
-    """
-    Format the incident analysis output into a SOC analyst report with immediate actions and future steps.
-    
-    Args:
-        analysis_output: The IncidentAnalysisOutput object containing analysis results
-        
-    Returns:
-        Formatted report string for display
-    """
-    # Start building the report string
-    report = []
-    
-    # Add report header without emoji
-    report.append(f"Security Incident Report: #{analysis_output.metrics_panel.get('incident_number', 'N/A')}")
-    
-    # Add incident classification details
-    if analysis_output.summary:
-        # Extract the title if it's in the summary
-        if isinstance(analysis_output.summary, dict) and analysis_output.summary.get('title'):
-            report.append(f"{analysis_output.summary.get('title')}")
-        elif isinstance(analysis_output.summary, str):
-            # Try to get the first line as the title
-            first_line = analysis_output.summary.split('\n')[0] if '\n' in analysis_output.summary else analysis_output.summary
-            report.append(f"{first_line}")
-    
-    # Add classification, detection source, etc.
-    report.append(f"Classification: {analysis_output.significance if analysis_output.significance != 'Not provided' else 'True Positive'}")
-    report.append(f"Severity: {analysis_output.severity_indicator}")
-    report.append(f"Detection Source: {analysis_output.metrics_panel.get('detection_source', 'ASI Scheduled Alerts')}")
-    
-    # Add MITRE ATT&CK details if available
-    if analysis_output.attack_techniques:
-        if len(analysis_output.attack_techniques) > 0:
-            # Format: Tactic: CommandAndControl
-            tactic = None
-            if '(' in analysis_output.attack_techniques[0]:
-                tactic_part = analysis_output.attack_techniques[0].split('(')[1]
-                if ')' in tactic_part:
-                    tactic = tactic_part.split(')')[0]
-            
-            if not tactic:
-                # Check technique_details for tactic
-                tech_id = analysis_output.attack_techniques[0].split(' ')[0] if ' ' in analysis_output.attack_techniques[0] else analysis_output.attack_techniques[0]
-                if tech_id in analysis_output.technique_details:
-                    tactic = analysis_output.technique_details[tech_id].get('tactic', "Unknown")
-                else:
-                    tactic = "Unknown"
-                
-            report.append(f"Tactic: {tactic}")
-            
-            # Format: Technique: T1071
-            technique_id = analysis_output.attack_techniques[0].split(' ')[0] if ' ' in analysis_output.attack_techniques[0] else "Unknown"
-            report.append(f"Technique: {technique_id}")
-    
-    # Add owner if available
-    owner = analysis_output.metrics_panel.get('owner', 'Unassigned')
-    # Try to extract email from owner JSON if it's a JSON string
-    if isinstance(owner, str) and owner.startswith('{"'):
-        try:
-            owner_data = json.loads(owner)
-            if 'assignedTo' in owner_data:
-                owner = owner_data['assignedTo']
-            elif 'email' in owner_data:
-                owner = owner_data['email']
-        except:
-            pass
-    report.append(f"Owner: {owner}")
-    
-    # Add domain info if available
-    if hasattr(analysis_output, 'threat_intel_context') and analysis_output.threat_intel_context != "Not provided":
-        if isinstance(analysis_output.threat_intel_context, dict):
-            if 'domain' in analysis_output.threat_intel_context:
-                report.append(f"Domain: {analysis_output.threat_intel_context['domain']}")
-                
-                # Add VirusTotal reputation if available
-                vt_rep = analysis_output.threat_intel_context.get('virustotal_reputation', 'Unknown')
-                vt_mal = analysis_output.threat_intel_context.get('malicious_votes', '?')
-                vt_eng = analysis_output.threat_intel_context.get('total_engines', '?')
-                report.append(f"VirusTotal Reputation: {vt_rep} ({vt_mal}/{vt_eng} malicious)")
-    
-    # Add status
-    report.append(f"Status: {analysis_output.metrics_panel.get('status', 'Unknown')}")
-    
-    # Add affected device and most active user if available
-    if hasattr(analysis_output, 'asset_impact_analysis') and analysis_output.asset_impact_analysis != "Not provided":
-        if isinstance(analysis_output.asset_impact_analysis, dict):
-            if 'affected_device' in analysis_output.asset_impact_analysis:
-                report.append(f"Affected Device: {analysis_output.asset_impact_analysis['affected_device']}")
-            if 'most_active_user' in analysis_output.asset_impact_analysis:
-                report.append(f"Most Active User: {analysis_output.asset_impact_analysis['most_active_user']}")
-    
-    # Add executive summary if available
-    if analysis_output.executive_summary:
-        report.append(f"\nExecutive Summary: {analysis_output.executive_summary}")
-    
-    # Add a blank line
-    report.append("")
-    
-    # Add immediate actions section without status column
-    report.append("A. Immediate Actions (First 1–2 hours)")
-    report.append("")
-    
-    # Ensure we always have immediate actions
-    if analysis_output.immediate_actions:
-        for action in analysis_output.immediate_actions:
-            if isinstance(action, dict):
-                action_desc = action.get('description', '')
-                if action_desc:
-                    # Remove any stray data_points that might leak into action description
-                    if "data_points": # Basic check
-                        action_desc = action_desc.split("data_points")[0].strip()
-                    report.append(f"{action_desc}")
-            elif isinstance(action, str): # Handle case where LLM might return strings
-                report.append(f"{action}")
-    else:
-        # Fallback actions if none are provided
-        report.append("Verify incident using security monitoring dashboards")
-        report.append("Isolate affected systems from the network")
-        report.append("Collect and preserve evidence (memory dumps, logs, network captures)")
-    
-    # Add future steps section without emoji
-    report.append("")
-    report.append("B. Future Steps (Next 24 hours)")
-    report.append("Investigation Steps")
-    report.append("")
-    
-    # Ensure we always have future steps
-    if analysis_output.future_steps:
-        for step in analysis_output.future_steps:
-            if isinstance(step, dict):
-                step_desc = step.get('description', '')
-                data_points = step.get('data_points', [])
-                
-                if step_desc:
-                    report.append(f"{step_desc}")
-                
-                if data_points:
-                    # Indent data points for clarity, filter out empty strings
-                    valid_points = [p for p in data_points if isinstance(p, str) and p.strip()] 
-                    if valid_points:
-                        report.append("") # Add space before data points
-                        for point in valid_points:
-                             # Basic cleaning: avoid printing if it looks like a path
-                            if not (point.startswith("/") or point.startswith("C:\\")):
-                                report.append(f"  - {point}") 
-                
-                report.append("") # Add space after each step
-            elif isinstance(step, str): # Handle if LLM returns strings
-                 report.append(f"{step}")
-                 report.append("")
-    else:
-        # Fallback steps if none are provided
-        report.append("Perform timeline analysis of all affected systems")
-        report.append("")
-        report.append("Run full antivirus/EDR scan on all potentially impacted endpoints")
-        report.append("")
-        report.append("Conduct forensic analysis of suspicious network traffic")
-        report.append("")
-    
-    # Join all parts with newlines and return
-    return "\n".join(report)
 
 if __name__ == "__main__":
     import argparse

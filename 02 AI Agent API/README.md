@@ -1,65 +1,104 @@
-# Microsoft Sentinel Security Alert Agent
+# SOC Analyst System with Local LLM Support
 
-This tool allows you to query Microsoft Sentinel security alerts using natural language questions and get AI-enhanced summaries of the results.
-
-## Prerequisites
-
-- Python 3.7 or higher
-- Microsoft Sentinel environment
-- Azure AD application with appropriate permissions
-
-## Setup
-
-1. Install required Python packages:
-
-```bash
-pip install -r requirements.txt
-```
-
-2. Set up your Azure credentials:
-   - Copy the `.env.sample` file to `.env` (if not already existing)
-   - Make sure the following variables are set in your `.env` file:
-     - `TENANT_ID`: Your Azure Active Directory tenant ID
-     - `CLIENT_ID`: Your Azure AD application client ID
-     - `CLIENT_SECRET`: Your Azure AD application secret
-     - `WORKSPACE_ID`: Your Log Analytics workspace ID
-
-3. Make sure you have the Ollama API running for AI features:
-   - Install Ollama from [https://ollama.com/](https://ollama.com/)
-   - Run `ollama serve` to start the API
-   - Pull the LLM model: `ollama pull llama3.2`
-
-## Getting Azure Credentials
-
-To use this tool, you need to create an Azure AD application with the appropriate permissions:
-
-1. Register a new application in Azure Active Directory
-2. Create a client secret for the application
-3. Grant the application the "Reader" role on your Microsoft Sentinel workspace
-4. Note down the tenant ID, client ID, client secret, and workspace ID
-
-## Usage
-
-Run the script:
-
-```bash
-python llm_security_alert.py
-```
-
-Example questions you can ask:
-
-- "Show me high severity alerts from the last 24 hours"
-- "Any unusual login attempts in the past week?"
-- "Count alerts by provider"
-- "What are the most common attack tactics?"
+This system provides an advanced Security Operations Center (SOC) analyst capability using local LLMs via Ollama. It generates comprehensive security incident reports with detailed, evidence-based recommendations.
 
 ## Features
 
-- Natural language query processing
-- AI-enhanced summaries of security alerts
-- Detailed alert view
-- Export to Excel
+- **Local LLM Processing**: Uses Ollama to run Llama 3.2 locally for enhanced privacy and reduced API costs
+- **Structured Analysis**: Generates well-organized reports with executive summaries, identified techniques, and prioritized actions
+- **Evidence-Based Recommendations**: All recommendations are linked to specific evidence from logs and incident data
+- **Security Framework Integration**: Incorporates guidance from MITRE ATT&CK, OWASP, and NIST frameworks
+- **Domain Reputation Checking**: Evaluates the risk level of domains involved in incidents
+- **Technical Specificity**: Provides specific commands, tools, and procedures for remediation
 
-## API Access Requirements
+## Installation
 
-This tool requires direct API access to Microsoft Sentinel and will NOT work with mock data. Make sure your credentials are properly set up and have the required permissions. 
+### Prerequisites
+
+- Python 3.8+
+- [Ollama](https://ollama.com/download) installed and running
+- Llama 3.2 model pulled in Ollama
+
+### Setup
+
+1. Clone this repository or download the files
+2. Install the required Python packages:
+   ```
+   pip install pydantic-ai requests
+   ```
+3. Run the setup script to verify Ollama is installed and the required model is available:
+   ```
+   python setup_ollama.py
+   ```
+
+The setup script will:
+- Check if Ollama is running
+- Install Ollama if needed (or provide download links)
+- Pull the Llama 3.2 model if it's not already installed
+
+## Usage
+
+### Basic Usage
+
+Run the main script:
+
+```
+python pydantic_soc_agent.py
+```
+
+This will:
+1. Process a sample security incident (provided in the code)
+2. Generate a comprehensive SOC analyst report
+3. Save the report to a text file named after the incident ID
+
+### Integrating with Your Own Data
+
+To use with your own incident data, modify the `sample_incident` and `sample_logs` variables in the `main()` function of `pydantic_soc_agent.py`.
+
+You can adapt the code to pull real data from your security tools by:
+1. Creating connectors to your SIEM, EDR, or other security tools
+2. Formatting the data to match the expected structure
+3. Calling `generate_soc_analyst_report()` with your data
+
+## Components
+
+- **pydantic_soc_agent.py**: Main module implementing the SOC analyst system
+- **context7_integration.py**: Integration with security frameworks
+- **setup_ollama.py**: Utility to set up Ollama and required models
+
+## Customization
+
+### Using Different Ollama Models
+
+To use a different model than Llama 3.2, modify the `OllamaAgent` initialization in `pydantic_soc_agent.py`:
+
+```python
+agent = OllamaAgent(
+    output_model=IncidentAnalysisOutput,
+    model="different-model:tag"  # Replace with your desired model
+)
+```
+
+### Customizing Prompts
+
+The system prompt can be customized in the `generate_system_prompt()` function to focus on specific aspects of security analysis or to align with your organization's practices.
+
+## Troubleshooting
+
+### Ollama Connection Issues
+
+If you encounter connection errors:
+1. Make sure Ollama is running (`ollama serve` command)
+2. Check that the model is properly installed (`ollama list`)
+3. Verify that the API endpoint is accessible (try `curl http://localhost:11434/api/tags`)
+
+### Model Output Format Issues
+
+If the model struggles to produce valid JSON output:
+1. The system includes a fallback parser that will extract what information it can
+2. Consider using a more capable model if available (like llama3:70b)
+3. Simplify the output schema if needed
+
+## License
+
+This project is open source and available under the MIT License. 

@@ -5,7 +5,7 @@ This module implements a modern SOC analyst system using:
 1. Latest Pydantic techniques (v2+)
 2. Tool calling pattern for modular capabilities
 3. Context7 MCP integration for security framework documentation
-4. Local LLM support via Ollama
+4. Local LLM support via Ollama with deepseek-r1:7b model
 """
 
 import os
@@ -37,7 +37,7 @@ from inspect import signature, Parameter
 class OllamaClient:
     """Client for interacting with Ollama API"""
     
-    def __init__(self, model: str = "llama3", host: str = "localhost", port: int = 11434):
+    def __init__(self, model: str = "deepseek-r1:7b", host: str = "localhost", port: int = 11434):
         self.model = model
         self.base_url = f"http://{host}:{port}/api"
     
@@ -416,7 +416,7 @@ async def generate_soc_analyst_report(
     incident_data: Dict[str, Any],
     logs: List[Dict[str, Any]],
     indicators: SecurityIndicators = None,
-    ollama_model: str = "llama3"
+    ollama_model: str = "deepseek-r1:7b"
 ) -> IncidentAnalysisOutput:
     """
     Generate a comprehensive SOC analyst report for a security incident
@@ -822,7 +822,7 @@ async def main():
         incident_data=sample_incident,
         logs=sample_logs,
         indicators=indicators,
-        ollama_model="llama3"  # Use the available Ollama model
+        ollama_model="deepseek-r1:7b"  # Use the deepseek model
     )
     
     # Format and print the report
@@ -841,5 +841,5 @@ async def main():
 
 if __name__ == "__main__":
     # Run the main function
-    print("Starting Modern SOC Analyst with tool calling and Context7 integration...")
+    print("Starting Modern SOC Analyst with tool calling and Context7 integration using deepseek-r1:7b...")
     asyncio.run(main()) 

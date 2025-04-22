@@ -11,6 +11,7 @@ import subprocess
 import requests
 import time
 import platform
+import json
 
 def check_ollama_running():
     """Check if the Ollama server is running by making a request to its API endpoint"""
@@ -88,63 +89,62 @@ def start_ollama_server():
         return False
 
 def pull_llama_model():
-    """Pull the Llama 3.2 model"""
-    models = get_installed_models()
-    model_name = "llama3"
+    """Pull the DeepSeek model"""
+    print("Pulling the DeepSeek model from Ollama...")
+    response = requests.post(
+        "http://localhost:11434/api/pull",
+        json={"name": "deepseek-r1:7b"}
+    )
     
-    if model_name in models or f"{model_name}:latest" in models:
-        print(f"Model {model_name} is already installed")
-        return True
-    
-    print(f"Pulling {model_name} model (this may take a while)...")
+    # Parse the streaming response
+    for line in response.iter_lines():
+        if line:
+            data = json.loads(line.decode('utf-8'))
+            if 'status' in data:
+                print(f"Status: {data['status']}")
+            if 'completed' in data and data['completed']:
+                print("DeepSeek model pulled successfully!")
+
+def validate_ollama_installation():
+    """Check if Ollama is installed and running"""
     try:
-        # Make API request to pull the model
-        response = requests.post(
-            "http://localhost:11434/api/pull",
-            json={"name": model_name}
-        )
-        
+        # Try to connect to Ollama
+        response = requests.get("http://localhost:11434/api/tags")
         if response.status_code == 200:
-            print(f"Successfully pulled {model_name} model")
-            return True
+            models = response.json().get('models', [])
+            deepseek_available = any(model['name'].startswith('deepseek-r1:7b') for model in models)
+            
+            if deepseek_available:
+                print("DeepSeek model is already available.")
+                return True
+            else:
+                print("Ollama is running, but DeepSeek model is not available.")
+                return False
         else:
-            print(f"Failed to pull model: {response.text}")
+            print(f"Ollama responded with status code: {response.status_code}")
             return False
     except Exception as e:
-        print(f"Error pulling model: {e}")
+        print(f"Error connecting to Ollama: {e}")
         return False
 
 def main():
-    """Main function to set up Ollama with Llama 3.2"""
-    print("Setting up Ollama for SOC Analyst System...")
+    """Main function to set up the Ollama environment"""
+    print("Setting up the Ollama environment for the Modern SOC Analyst...")
     
-    # Check if Ollama is running
-    if not check_ollama_running():
-        print("Ollama is not running.")
-        
-        # Try to start Ollama
-        if not start_ollama_server():
-            # If starting fails, try to install
-            if not install_ollama():
-                print("Failed to set up Ollama. Please install it manually.")
-                return False
-            
-            # Try to start again after installation
-            if not start_ollama_server():
-                print("Ollama installed but couldn't be started. Please start it manually.")
-                return False
-    
-    print("Ollama is running!")
-    
-    # Pull the Llama 3.2 model
-    if pull_llama_model():
-        print("\nSetup complete! You can now run the SOC Analyst System with Ollama.")
-        print("Run the main script with: python 02\\ AI\\ Agent\\ API/pydantic_soc_agent.py")
-        return True
+    # Check if Ollama is already installed and running
+    if validate_ollama_installation():
+        print("Ollama is already set up with the DeepSeek model.")
     else:
-        print("\nSetup incomplete. Ollama is running but the model couldn't be pulled.")
-        print("Please try pulling the model manually with: ollama pull llama3")
-        return False
+        # Install Ollama if it's not already installed
+        install_ollama()
+        
+        # Start Ollama
+        start_ollama_server()
+        
+        # Pull the DeepSeek model
+        pull_llama_model()
+    
+    print("Ollama setup completed. The Modern SOC Analyst is ready to use.")
 
 if __name__ == "__main__":
     success = main()

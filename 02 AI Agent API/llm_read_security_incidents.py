@@ -29,7 +29,7 @@ except ImportError:
 
 # Ollama configuration
 OLLAMA_API_BASE = "http://localhost:11434"
-OLLAMA_MODEL = "llama3.2:latest"
+OLLAMA_MODEL = "deepseek-r1:7b"
 
 # Azure AD and Log Analytics configuration
 TENANT_ID = os.getenv('TENANT_ID')

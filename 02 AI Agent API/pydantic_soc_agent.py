@@ -118,11 +118,12 @@ class OllamaLLMConfig:
 
 # Custom Ollama-powered agent for Pydantic AI
 class OllamaAgent:
-    """Agent implementation that uses Ollama"""
+    """Agent for interacting with Ollama local LLMs"""
     
-    def __init__(self, output_model, model: str = "llama3:latest"):
-        self.output_model = output_model
-        self.llm = OllamaLLMConfig(model=model)
+    def __init__(self, model: str = "deepseek-r1:7b", host: str = "localhost", port: int = 11434):
+        self.model = model
+        self.base_url = f"http://{host}:{port}/api"
+        print(f"Initialized Ollama agent with model: {model}")
         
     async def run(self, system_prompt: str, prompt: str) -> Any:
         """Run the agent with the given prompts"""
@@ -234,7 +235,7 @@ Here's the incident information:
 # Create the Agent with the output model - using Ollama instead of OpenAI
 agent = OllamaAgent(
     output_model=IncidentAnalysisOutput,
-    model="llama3:latest"  # Using Llama 3 model
+    model="deepseek-r1:7b"  # Using Llama 3 model
 )
 
 
@@ -587,7 +588,12 @@ IDENTIFIED TECHNIQUES
 
 
 async def main():
-    """Main function to demonstrate SOC report generation"""
+    """Main function to run the SOC agent"""
+    print("Initializing SOC Agent with Ollama (deepseek-r1:7b model)...")
+    
+    # Initialize the Ollama agent
+    agent = OllamaAgent(model="deepseek-r1:7b")
+    
     # Sample incident data (in a real scenario, this would come from Azure Sentinel)
     sample_incident = {
         "IncidentNumber": "INC-2023-12345",
@@ -692,5 +698,4 @@ async def main():
 
 if __name__ == "__main__":
     # Run the main function with Ollama LLM
-    print("Starting SOC Analyst with Ollama Llama 3.2 local LLM...")
     asyncio.run(main()) 

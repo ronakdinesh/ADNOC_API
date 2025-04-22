@@ -1,0 +1,46 @@
+Security Incident Report: #690296
+[Custom]-[TI]-DNS with TI Domain Correlation
+Classification: True Positive
+Severity: Low
+Detection Source: ASI Scheduled Alerts
+Tactic: Command and Control
+Technique: T1071
+Owner: Azhar Hassan
+Domain: ecomicrolab.com
+VirusTotal Reputation: Unknown (10/Unknown malicious)
+Status: Closed
+Affected Device: zscaler-nss (75 occurrences)
+Most Active User: ydeshmukh2@adnoc.ae (55 hits)
+
+Executive Summary: Security incident involving potentially suspicious network activity detected. Immediate actions required to contain potential threat by blocking indicators and isolating systems. Further investigation needed to determine full scope and impact.
+
+A. Immediate Actions (First 1–2 hours)
+
+Block domain ecomicrolab.com at Firewall/Proxy/DNS Filter levels.
+Check reputation of domain ecomicrolab.com using VirusTotal or other TI source.
+Isolate system zscaler-nss from the network (via EDR, VLAN change, or port disable) to contain potential threat.
+Monitor account ydeshmukh2@adnoc.ae closely for suspicious activity. Consider temporary disablement if high risk is confirmed.
+Capture volatile memory and disk image from key involved system(s) for forensic analysis.
+
+B. Future Steps (Next 24 hours)
+Investigation Steps
+
+Review DNS logs (Windows Event Log or Sysmon ID 22) across endpoints for queries related to ecomicrolab.com or similar variations.
+
+  - Domain ecomicrolab.com identified as key indicator
+
+Audit Azure AD sign-in and UAL logs for user ydeshmukh2@adnoc.ae, focusing on unusual times, locations, or application access.
+
+  - User ydeshmukh2@adnoc.ae involved in 55 logged activities
+
+Investigate process execution logs (Security Event ID 4688 or Sysmon ID 1) on host zscaler-nss around the time of the incident.
+
+  - Device zscaler-nss mentioned 75 times in logs
+
+Search EDR/Antivirus logs across the environment for alerts related to the identified indicators (domains, IPs, hashes).
+
+  - Multiple indicators identified requiring environment-wide check
+
+Analyze proxy logs for connections to identified malicious domains/URLs to understand user interaction.
+
+  - Indicators include domains/URLs: ['ecomicrolab.com'], []

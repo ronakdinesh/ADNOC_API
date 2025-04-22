@@ -1,0 +1,46 @@
+Security Incident Report: #653647
+[Custom]-[TI]-DNS with TI Domain Correlation
+Classification: True Positive
+Severity: Low
+Detection Source: ASI Scheduled Alerts
+Tactic: Command and Control
+Technique: T1071
+Owner: Pavel Statsenko
+Domain: at-uat.myaspect.net
+VirusTotal Reputation: Unknown (0/Unknown malicious)
+Status: Closed
+Affected Device: zscaler-nss (100 occurrences)
+Most Active User: extern.samehta@adnoc.ae (87 hits)
+
+Executive Summary: Security incident involving potentially suspicious network activity detected. Immediate actions required to contain potential threat by blocking indicators and isolating systems. Further investigation needed to determine full scope and impact.
+
+A. Immediate Actions (First 1–2 hours)
+
+Block domain at-uat.myaspect.net at Firewall/Proxy/DNS Filter levels.
+Check reputation of domain at-uat.myaspect.net using VirusTotal or other TI source.
+Isolate system zscaler-nss from the network (via EDR, VLAN change, or port disable) to contain potential threat.
+Monitor account extern.samehta@adnoc.ae closely for suspicious activity. Consider temporary disablement if high risk is confirmed.
+Capture volatile memory and disk image from key involved system(s) for forensic analysis.
+
+B. Future Steps (Next 24 hours)
+Investigation Steps
+
+Review DNS logs (Windows Event Log or Sysmon ID 22) across endpoints for queries related to at-uat.myaspect.net or similar variations.
+
+  - Domain at-uat.myaspect.net identified as key indicator
+
+Audit Azure AD sign-in and UAL logs for user extern.samehta@adnoc.ae, focusing on unusual times, locations, or application access.
+
+  - User extern.samehta@adnoc.ae involved in 87 logged activities
+
+Investigate process execution logs (Security Event ID 4688 or Sysmon ID 1) on host zscaler-nss around the time of the incident.
+
+  - Device zscaler-nss mentioned 100 times in logs
+
+Search EDR/Antivirus logs across the environment for alerts related to the identified indicators (domains, IPs, hashes).
+
+  - Multiple indicators identified requiring environment-wide check
+
+Analyze proxy logs for connections to identified malicious domains/URLs to understand user interaction.
+
+  - Indicators include domains/URLs: ['at-uat.myaspect.net'], []

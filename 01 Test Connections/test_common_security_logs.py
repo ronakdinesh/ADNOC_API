@@ -16,7 +16,7 @@ client_id = os.getenv('CLIENT_ID')
 client_secret = os.getenv('CLIENT_SECRET')
 workspace_id = os.getenv('WORKSPACE_ID')
 
-def get_common_security_logs(hours=24, limit=5, device_vendor=None):
+def get_common_security_logs(hours=24, limit=500, device_vendor=None):
     try:
         print("Authenticating with Azure AD...")
         # Authentication
@@ -177,19 +177,27 @@ def export_to_excel(logs):
         print("No logs to export.")
         return
         
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f'common_security_logs_{timestamp}.xlsx'
+    current_date = datetime.now().strftime('%Y-%m-%d')
+    filename = f'SecurityLogs_LastDay_{current_date}.xlsx'
     
     df = pd.DataFrame(logs)
+    
+    # Get and print row and column counts
+    row_count = len(df)
+    column_count = len(df.columns)
+    print(f"\nTotal number of rows: {row_count}")
+    print(f"Total number of columns: {column_count}")
+    print("Column names: " + ", ".join(df.columns.tolist()))
+    
     df.to_excel(filename, index=False)
-    print(f"\nExported logs to {filename}")
+    print(f"Exported logs to {filename}")
 
 if __name__ == "__main__":
     # Test different scenarios
     print("\n1. Testing all security logs from last 7 days")
     logs = get_common_security_logs(
         hours=24*7,  # Last 7 days
-        limit=5
+        limit=500
     )
     if logs:
         display_logs(logs)
@@ -206,7 +214,7 @@ if __name__ == "__main__":
     print("\n2. Testing all security logs from the past day")
     daily_logs = get_common_security_logs(
         hours=24,  # Last day
-        limit=100  # Increasing limit to get more logs
+        limit=500  # Increasing limit to get more logs
     )
     if daily_logs:
         display_logs(daily_logs)

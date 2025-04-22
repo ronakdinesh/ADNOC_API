@@ -4,6 +4,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 import os
 import adal
+import pandas as pd
 
 # Load environment variables from .env file
 load_dotenv()
@@ -34,7 +35,7 @@ def get_security_alerts():
         # KQL query
         query = """
         SecurityAlert
-        | where TimeGenerated > ago(7d)
+        | where TimeGenerated > ago(30d)
         | where AlertName == "[Custom]-[TI]-DNS with TI Domain Correlation"
         | order by TimeGenerated desc
         """
@@ -90,6 +91,37 @@ def get_security_alerts():
         print(f"An error occurred: {str(e)}")
         return None
 
+def export_to_excel(alerts):
+    if not alerts or len(alerts) == 0:
+        print("No data to export to Excel.")
+        return
+    
+    try:
+        # Convert to DataFrame
+        df = pd.DataFrame(alerts)
+        
+        # Get current date for filename
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        excel_filename = f"TI_DNS_Domain_Correlation_{current_date}.xlsx"
+        
+        # Export to Excel
+        with pd.ExcelWriter(excel_filename, engine='openpyxl') as writer:
+            df.to_excel(writer, sheet_name='TI DNS Alerts', index=False)
+            
+            # Auto-adjust columns' width
+            worksheet = writer.sheets['TI DNS Alerts']
+            for i, col in enumerate(df.columns):
+                max_length = max(df[col].astype(str).map(len).max(), len(col)) + 2
+                worksheet.column_dimensions[worksheet.cell(row=1, column=i+1).column_letter].width = max_length
+        
+        print(f"Data exported successfully to {excel_filename}")
+        return excel_filename
+    except Exception as e:
+        print(f"Error exporting to Excel: {str(e)}")
+        return None
+
 if __name__ == "__main__":
     print("\nExecuting SecurityAlert query")
-    alerts = get_security_alerts() 
+    alerts = get_security_alerts()
+    if alerts:
+        excel_file = export_to_excel(alerts) 

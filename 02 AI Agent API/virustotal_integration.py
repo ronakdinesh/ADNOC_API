@@ -103,12 +103,15 @@ def analyze_domains(domains: List[str]) -> Dict[str, Dict]:
     results = {}
     vt = VirusTotalAPI()
     
+    print(f"VirusTotal API: Analyzing {len(domains)} domains: {domains}")
+    
     for domain in domains:
         if not domain:
             continue
             
         # Skip common benign domains and likely false positives
         if any(domain.endswith(suffix) for suffix in ['.microsoft.com', '.windows.com', '.office.com', '.azure.com', '.local']):
+            print(f"Skipping Microsoft domain: {domain}")
             continue
             
         # Skip Microsoft service domains that aren't actually web domains (like Microsoft.OperationalInsights)
@@ -118,6 +121,7 @@ def analyze_domains(domains: List[str]) -> Dict[str, Dict]:
             
         # Check if domain is an IP address - these need different handling
         if all(c.isdigit() or c == '.' for c in domain):
+            print(f"Skipping IP address: {domain}")
             continue
             
         # Validate domain format - must have at least one dot and valid TLD
@@ -127,12 +131,18 @@ def analyze_domains(domains: List[str]) -> Dict[str, Dict]:
             continue
             
         try:
+            print(f"Checking domain with VirusTotal: {domain}")
             result = vt.check_domain_reputation(domain)
             if result:
                 results[domain] = result
+                print(f"VirusTotal result for {domain}: malicious={result.get('malicious_votes', 0)}, suspicious={result.get('suspicious_votes', 0)}")
+            else:
+                print(f"No VirusTotal result found for {domain}")
         except Exception as e:
             logger.error(f"Error analyzing domain {domain}: {str(e)}")
+            print(f"Error analyzing domain {domain}: {str(e)}")
     
+    print(f"VirusTotal analysis complete. Found results for {len(results)} domains.")
     return results
 
 

@@ -1,46 +1,78 @@
-Security Incident Report: #690296
-[Custom]-[TI]-DNS with TI Domain Correlation
-Classification: True Positive
-Severity: Low
-Detection Source: ASI Scheduled Alerts
-Tactic: Command and Control
-Technique: T1071
-Owner: Azhar Hassan
-Domain: ecomicrolab.com
-VirusTotal Reputation: Unknown (10/Unknown malicious)
-Status: Closed
-Affected Device: zscaler-nss (75 occurrences)
-Most Active User: ydeshmukh2@adnoc.ae (55 hits)
 
-Executive Summary: Security incident involving potentially suspicious network activity detected. Immediate actions required to contain potential threat by blocking indicators and isolating systems. Further investigation needed to determine full scope and impact.
+===============================================
+        SOC ANALYST REPORT: INCIDENT #690296
+        [Custom]-[TI]-DNS with TI Domain Correlation
+===============================================
 
-A. Immediate Actions (First 1–2 hours)
+SEVERITY: Low
 
-Block domain ecomicrolab.com at Firewall/Proxy/DNS Filter levels.
-Check reputation of domain ecomicrolab.com using VirusTotal or other TI source.
-Isolate system zscaler-nss from the network (via EDR, VLAN change, or port disable) to contain potential threat.
-Monitor account ydeshmukh2@adnoc.ae closely for suspicious activity. Consider temporary disablement if high risk is confirmed.
-Capture volatile memory and disk image from key involved system(s) for forensic analysis.
+EXECUTIVE SUMMARY:
+Security incident involving potentially suspicious network activity detected. Immediate actions required to contain potential threat by blocking indicators and isolating systems. Further investigation needed to determine full scope and impact.
+
+
+
+A. Immediate Actions (First 1-2 hours)
+
+Block domain ecomicrolab.com at Firewall/Proxy/DNS Filter levels [VT Score: Unknown].
+EVIDENCE:
+• Domain found in incident indicators
+• VT Reputation: Unknown
+• No systems found in logs
+
+Isolate system zscaler-nss from the network, performed actions: Allowed, Blocked.
+EVIDENCE:
+• System appeared 75 times in logs
+• No domain connections found
+• No users found in logs
+
+Capture volatile memory and disk image from involved systems for forensic analysis.
+EVIDENCE:
+• Multiple systems involved: zscaler-nss, 10.248.28.157, AHQ-DC-E01-WANFW-PA5K-01
+• Suspicious activities observed across 6 systems
+• Memory forensics needed to identify potential malware/persistence
+
 
 B. Future Steps (Next 24 hours)
-Investigation Steps
 
-Review DNS logs (Windows Event Log or Sysmon ID 22) across endpoints for queries related to ecomicrolab.com or similar variations.
+Review DNS logs (Event ID 22) across endpoints for queries related to ecomicrolab.com or similar variations.
+EVIDENCE:
+• Domain ecomicrolab.com identified as key indicator
+• No systems found connecting to domain
+• No users found accessing domain
 
-  - Domain ecomicrolab.com identified as key indicator
+Investigate process execution logs (Security ID 4688) on host zscaler-nss around the time of the incident.
+EVIDENCE:
+• System zscaler-nss mentioned 75 times in logs
+• No domains found
+• System connected to 15 IPs
 
-Audit Azure AD sign-in and UAL logs for user ydeshmukh2@adnoc.ae, focusing on unusual times, locations, or application access.
+Search EDR/Antivirus logs across the environment for alerts related to the identified indicators.
+EVIDENCE:
+• Multiple indicators identified: 1 domains, 0 IPs
+• Alert correlation needed across 6 systems
+• 1 alerts already associated with this incident
 
-  - User ydeshmukh2@adnoc.ae involved in 55 logged activities
+Analyze proxy logs for connections to identified malicious domains to understand user interaction patterns.
+EVIDENCE:
+• Domains identified: ecomicrolab.com
+• Domains accessed by 0 users
+• Timeline analysis needed to establish access sequence
 
-Investigate process execution logs (Security Event ID 4688 or Sysmon ID 1) on host zscaler-nss around the time of the incident.
 
-  - Device zscaler-nss mentioned 75 times in logs
+C. MITRE ATT&CK Techniques
 
-Search EDR/Antivirus logs across the environment for alerts related to the identified indicators (domains, IPs, hashes).
+• T1071 (Command and Control)
 
-  - Multiple indicators identified requiring environment-wide check
+D. Threat Intelligence Context
 
-Analyze proxy logs for connections to identified malicious domains/URLs to understand user interaction.
+domain: ecomicrolab.com
+virustotal_reputation: Unknown
+malicious_votes: 10
+total_engines: Unknown
 
-  - Indicators include domains/URLs: ['ecomicrolab.com'], []
+F. Key Metrics
+
+incident_number: 690296
+status: Closed
+owner: {"objectId":"6b019ec6-7ba1-4d74-a66b-c95136c402a0","email":"Azhar.Hassan@helpag.com","assignedTo":"Azhar Hassan","userPrincipalName":"Azhar.Hassan@helpag.com"}
+detection_source: ASI Scheduled Alerts

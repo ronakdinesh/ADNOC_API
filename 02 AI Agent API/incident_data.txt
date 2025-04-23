@@ -1,0 +1,68 @@
+================================================================================
+SECURITY INCIDENT #690296
+================================================================================
+
+INCIDENT DETAILS:
+--------------------------------------------------------------------------------
+---------------------  ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+Incident Number        690296
+Title                  [Custom]-[TI]-DNS with TI Domain Correlation
+Severity               Low
+Status                 Closed
+Created                2025-04-15T09:44:25.4811815Z
+Last Modified          Unknown
+Owner                  {"objectId":"6b019ec6-7ba1-4d74-a66b-c95136c402a0","email":"Azhar.Hassan@helpag.com","assignedTo":"Azhar Hassan","userPrincipalName":"Azhar.Hassan@helpag.com"}
+Classification         TruePositive
+Classification Reason  SuspiciousActivity
+---------------------  ---------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+ASSOCIATED ALERTS:
+--------------------------------------------------------------------------------
+
+Alert #1:
+--------------  --------------------------------------------
+SystemAlertId   7950f14a-046a-5209-806b-a63ed1271c0b
+Alert Name      [Custom]-[TI]-DNS with TI Domain Correlation
+Severity        High
+Status          New
+Time Generated  2025-04-14T11:57:41.1379157Z
+Provider        ASI Scheduled Alerts
+--------------  --------------------------------------------
+
+Description:
+Description:
+- This rule detects DNS queries made to domain names that are listed in a Threat Intelligence (TI) feed with a high confidence score. It correlates DNS query logs with the threat intelligence indicators to identify potentially malicious DNS activity. The rule also cross-references blocked domains to exclude them from the detection and ensures that detections only occur within the intelligence feed's expiration window.
+
+Entities:
+[{"$id":"3","DomainName":"ecomicrolab.com","Type":"dns"},{"$id":"4","Address":"10.248.4.135","Type":"ip"},{"$id":"5","Address":"10.190.33.126","Type":"ip"}]
+
+Tactics: CommandAndControl
+Techniques: ["T1071"]
+
+VIRUSTOTAL DOMAIN REPUTATION:
+----------------------------
+ecomicrolab.com: HIGH RISK (10/94 malicious, 1 suspicious, 0 clean) | Reputation: -3
+
+LOG PATTERNS:
+Security Log Patterns for domain: ecomicrolab.com
+
+Most Common Destination IPs:
+- 34.54.88.138: 30 occurrences
+- 0.0.0.0: 19 occurrences
+- 10.248.28.157: 11 occurrences
+- 172.217.17.78: 10 occurrences
+- 10.254.1.154: 9 occurrences
+
+Most Common Destination Ports:
+- 53: 12 occurrences
+
+Most Active Users:
+- ydeshmukh2@adnoc.ae: 55 occurrences
+- hamad.suwaidi@adnoc.ae: 7 occurrences
+- walia@adnoc.ae: 3 occurrences
+- wriaz2@adnoc.ae: 3 occurrences
+- kaaytham@adnoc.ae: 3 occurrences
+
+Most Common Device Names:
+- AHQ-DC-E01-WANFW-PA5K-01: 11 occurrences
+- KDC-DR-WANFW-PA5K-01: 1 occurrences 

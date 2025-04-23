@@ -17,6 +17,11 @@ import sys
 import ast
 import numpy as np
 import asyncio
+from local_llm_integration import get_local_llm_client  # Import the missing function
+
+# Import necessary libraries for enhanced RAG
+from uuid import uuid4
+from collections import defaultdict
 
 # Load environment variables from .env file
 load_dotenv()
@@ -31,7 +36,7 @@ except ImportError:
 
 # Ollama configuration
 OLLAMA_API_BASE = "http://localhost:11434"
-OLLAMA_MODEL = "deepseek-r1:7b"
+OLLAMA_MODEL = "llama3.2:latest"
 
 # Azure AD and Log Analytics configuration
 TENANT_ID = os.getenv('TENANT_ID')
@@ -50,6 +55,8 @@ else:
 
 class IncidentAnalysisOutput(BaseModel):
     # Add new fields for enhanced report
+    incident_id: str = Field(default="", description="The incident ID or number")
+    incident_title: str = Field(default="", description="The incident title")
     executive_summary: str = Field(default="", description="A 2-3 sentence executive summary of incident criticality, impact, and required actions")
     severity_indicator: str = Field(default="Medium", description="Simple severity indicator (Critical/High/Medium/Low)")
     
@@ -758,95 +765,165 @@ def format_log_summary(logs: List[Dict[str, Any]], limit: int = 10) -> str:
 
     return summary
 
-def analyze_log_patterns(logs: List[Dict[str, Any]], domain: str = None) -> Dict[str, Dict[str, Any]]:
+def analyze_log_patterns(logs: List[Dict[str, Any]], domain: str = None) -> Dict[str, Any]:
     """
     Analyze security logs for common patterns and statistics.
+    Focuses on destination IPs, ports, usernames, device names, etc.
     
     Args:
         logs: List of log dictionaries
-        domain: Optional domain to include in the output
-        
-    Returns:
-        Dictionary with pattern categories, each containing label and data
+        domain: Optional domain name to focus analysis on
     """
     if not logs:
-        return {}
-    
-    patterns = {}
-    
-    # DestinationIP analysis
-    dest_ips = [log.get('DestinationIP') for log in logs if log.get('DestinationIP') and log.get('DestinationIP') != 'N/A']
-    if dest_ips:
-        # Count occurrences
-        ip_counts = {}
-        for ip in dest_ips:
-            ip_counts[ip] = ip_counts.get(ip, 0) + 1
-        # Sort by count and get top entries
-        top_ips = dict(sorted(ip_counts.items(), key=lambda x: x[1], reverse=True)[:5])
-        patterns['destination_ip'] = {
-            'data': top_ips,
-            'label': 'Most Common Destination IPs'
+        return {
+            "destination_ip": {"description": "Most common destination IPs", "data": {}, "summary": "No data available"},
+            "destination_port": {"description": "Most common destination ports", "data": {}, "summary": "No data available"},
+            "source_username": {"description": "Most common usernames", "data": {}, "summary": "No data available"},
+            "device_name": {"description": "Most common device names", "data": {}, "summary": "No data available"},
+            "process_name": {"description": "Most common process names", "data": {}, "summary": "No data available"},
+            "alert_type": {"description": "Most common alert types", "data": {}, "summary": "No data available"},
+            "action": {"description": "Most common actions", "data": {}, "summary": "No data available"},
         }
     
-    # DestinationPort analysis
-    dest_ports = [log.get('DestinationPort') for log in logs if log.get('DestinationPort') and log.get('DestinationPort') != 'N/A']
-    if dest_ports:
-        port_counts = {}
-        for port in dest_ports:
-            port_counts[port] = port_counts.get(port, 0) + 1
-        # Sort by count and get top entries
-        top_ports = dict(sorted(port_counts.items(), key=lambda x: x[1], reverse=True)[:5])
-        patterns['destination_port'] = {
-            'data': top_ports,
-            'label': 'Most Common Destination Ports'
+    try:
+        # Ensure logs is a list
+        if not isinstance(logs, list):
+            print(f"Warning: logs is not a list but {type(logs)}")
+            if isinstance(logs, dict):
+                # Try to convert if it's a dictionary
+                logs = [logs]
+            else:
+                # Return empty structured dict on invalid input
+                return {
+                    "destination_ip": {"description": "Most common destination IPs", "data": {}, "summary": "Invalid input format"},
+                    "destination_port": {"description": "Most common destination ports", "data": {}, "summary": "Invalid input format"},
+                    "source_username": {"description": "Most common usernames", "data": {}, "summary": "Invalid input format"},
+                    "device_name": {"description": "Most common device names", "data": {}, "summary": "Invalid input format"},
+                    "process_name": {"description": "Most common process names", "data": {}, "summary": "Invalid input format"},
+                    "alert_type": {"description": "Most common alert types", "data": {}, "summary": "Invalid input format"},
+                    "action": {"description": "Most common actions", "data": {}, "summary": "Invalid input format"},
+                }
+        
+        # Initialize pattern categories
+        patterns = {
+            "destination_ip": {"description": "Most common destination IPs", "data": {}},
+            "destination_port": {"description": "Most common destination ports", "data": {}},
+            "source_username": {"description": "Most common usernames", "data": {}},
+            "device_name": {"description": "Most common device names", "data": {}},
+            "process_name": {"description": "Most common process names", "data": {}},
+            "alert_type": {"description": "Most common alert types", "data": {}},
+            "action": {"description": "Most common actions", "data": {}},
         }
-    
-    # SourceUserName analysis
-    usernames = [log.get('SourceUserName') for log in logs if log.get('SourceUserName') and log.get('SourceUserName') != 'N/A']
-    if usernames:
-        user_counts = {}
-        for user in usernames:
-            user_counts[user] = user_counts.get(user, 0) + 1
-        # Sort by count and get top entries
-        top_users = dict(sorted(user_counts.items(), key=lambda x: x[1], reverse=True)[:5])
-        patterns['source_username'] = {
-            'data': top_users,
-            'label': 'Most Active Users'
+        
+        # Filter logs by domain if a domain is provided
+        if domain:
+            filtered_logs = []
+            for log in logs:
+                if not isinstance(log, dict):
+                    continue
+                    
+                # Check if the log contains the specified domain
+                log_domain = log.get('domain') or log.get('destination_domain') or log.get('domain_name')
+                if log_domain and domain.lower() in log_domain.lower():
+                    filtered_logs.append(log)
+                    
+                # Also check in URI or URL fields
+                uri = log.get('uri') or log.get('url') or log.get('resource')
+                if uri and domain.lower() in uri.lower():
+                    filtered_logs.append(log)
+            
+            # Use filtered logs if any were found, otherwise use all logs
+            if filtered_logs:
+                print(f"Filtered logs by domain {domain}: found {len(filtered_logs)} of {len(logs)} logs")
+                logs = filtered_logs
+            else:
+                print(f"No logs found for domain {domain}, using all {len(logs)} logs")
+        
+        # Process each log entry
+        for log in logs:
+            if not isinstance(log, dict):
+                print(f"Warning: log entry is not a dictionary but {type(log)}")
+                continue
+                
+            # Extract and count destination IPs
+            dest_ip = log.get('destination_ip') or log.get('dest_ip') or log.get('dstip') or log.get('dst_ip')
+            if dest_ip and isinstance(dest_ip, str) and dest_ip.strip():
+                patterns["destination_ip"]["data"][dest_ip] = patterns["destination_ip"]["data"].get(dest_ip, 0) + 1
+            
+            # Extract and count destination ports
+            dest_port = log.get('destination_port') or log.get('dest_port') or log.get('dstport') or log.get('dst_port')
+            # Convert port to string if it's a number
+            if dest_port is not None:
+                if isinstance(dest_port, (int, float)):
+                    dest_port = str(int(dest_port))
+                if isinstance(dest_port, str) and dest_port.strip():
+                    patterns["destination_port"]["data"][dest_port] = patterns["destination_port"]["data"].get(dest_port, 0) + 1
+            
+            # Extract and count usernames
+            username = log.get('username') or log.get('user') or log.get('source_user') or log.get('src_user')
+            if username and isinstance(username, str) and username.strip():
+                patterns["source_username"]["data"][username] = patterns["source_username"]["data"].get(username, 0) + 1
+            
+            # Extract and count device names
+            device = log.get('device_name') or log.get('host') or log.get('hostname') or log.get('source_host')
+            if device and isinstance(device, str) and device.strip():
+                patterns["device_name"]["data"][device] = patterns["device_name"]["data"].get(device, 0) + 1
+            
+            # Extract and count process names
+            process = log.get('process_name') or log.get('process') or log.get('image') or log.get('executable')
+            if process and isinstance(process, str) and process.strip():
+                patterns["process_name"]["data"][process] = patterns["process_name"]["data"].get(process, 0) + 1
+            
+            # Extract and count alert types
+            alert_type = log.get('alert_type') or log.get('alert') or log.get('detection_type') or log.get('event_type')
+            if alert_type and isinstance(alert_type, str) and alert_type.strip():
+                patterns["alert_type"]["data"][alert_type] = patterns["alert_type"]["data"].get(alert_type, 0) + 1
+            
+            # Extract and count actions
+            action = log.get('action') or log.get('status') or log.get('result')
+            if action and isinstance(action, str) and action.strip():
+                patterns["action"]["data"][action] = patterns["action"]["data"].get(action, 0) + 1
+        
+        # Sort each category by frequency and ensure proper format
+        for category in patterns:
+            # Ensure data is a dictionary and not empty
+            if not patterns[category]["data"] or not isinstance(patterns[category]["data"], dict):
+                patterns[category]["data"] = {}
+                patterns[category]["summary"] = "No data available for this category."
+                continue
+                
+            # Get the top occurrences    
+            try:
+                sorted_items = sorted(patterns[category]["data"].items(), key=lambda x: -1 * x[1])
+                top_items = sorted_items[:5]  # Top 5 items
+                
+                # Generate a summary
+                summary_parts = []
+                for item, count in top_items:
+                    summary_parts.append(f"{item} ({count})")
+                
+                patterns[category]["summary"] = f"Top items: {', '.join(summary_parts)}"
+            except Exception as e:
+                print(f"Error processing {category} data: {str(e)}")
+                patterns[category]["summary"] = "Error processing data."
+                # Ensure data is a dictionary even if sorting failed
+                if not isinstance(patterns[category]["data"], dict):
+                    patterns[category]["data"] = {}
+        
+        return patterns
+        
+    except Exception as e:
+        print(f"Error in analyze_log_patterns: {str(e)}")
+        # Return structured empty dict on error
+        return {
+            "destination_ip": {"description": "Most common destination IPs", "data": {}, "summary": f"Error: {str(e)}"},
+            "destination_port": {"description": "Most common destination ports", "data": {}, "summary": f"Error: {str(e)}"},
+            "source_username": {"description": "Most common usernames", "data": {}, "summary": f"Error: {str(e)}"},
+            "device_name": {"description": "Most common device names", "data": {}, "summary": f"Error: {str(e)}"},
+            "process_name": {"description": "Most common process names", "data": {}, "summary": f"Error: {str(e)}"},
+            "alert_type": {"description": "Most common alert types", "data": {}, "summary": f"Error: {str(e)}"},
+            "action": {"description": "Most common actions", "data": {}, "summary": f"Error: {str(e)}"},
         }
-    
-    # DeviceName analysis
-    devices = [log.get('DeviceName') for log in logs if log.get('DeviceName') and log.get('DeviceName') != 'N/A']
-    # If DeviceName isn't available, try DeviceVendor
-    if not devices:
-        devices = [log.get('DeviceVendor') for log in logs if log.get('DeviceVendor') and log.get('DeviceVendor') != 'N/A']
-    
-    if devices:
-        device_counts = {}
-        for device in devices:
-            device_counts[device] = device_counts.get(device, 0) + 1
-        # Sort by count and get top entries
-        top_devices = dict(sorted(device_counts.items(), key=lambda x: x[1], reverse=True)[:5])
-        patterns['device_name'] = {
-            'data': top_devices,
-            'label': 'Most Common Device Names'
-        }
-    
-    # Add default message for empty categories
-    categories = ['destination_ip', 'destination_port', 'source_username', 'device_name']
-    for category in categories:
-        if category not in patterns:
-            patterns[category] = {
-                'data': {'No data available': 0},
-                'label': {
-                    'destination_ip': 'Most Common Destination IPs',
-                    'destination_port': 'Most Common Destination Ports',
-                    'source_username': 'Most Active Users',
-                    'device_name': 'Most Common Device Names'
-                }[category]
-            }
-    
-    return patterns
-
 
 def format_log_patterns(patterns: Dict[str, Dict[str, Any]], domain: str = None) -> str:
     """
@@ -868,11 +945,39 @@ def format_log_patterns(patterns: Dict[str, Dict[str, Any]], domain: str = None)
     else:
         result.append("Security Log Patterns:")
     
-    # Add each pattern category
-    for category, info in patterns.items():
-        result.append(f"\n{info['label']}:")
-        for item, count in info['data'].items():
-            result.append(f"- {item}: {count} occurrences")
+    try:
+        # Add each pattern category
+        for category, info in patterns.items():
+            if not isinstance(info, dict):
+                continue
+                
+            # Use description field if available, or category name if label is missing
+            label = info.get('description', info.get('label', category.replace('_', ' ').title()))
+            result.append(f"\n{label}:")
+            
+            # Safely extract and process data
+            data = info.get('data', {})
+            if not isinstance(data, dict) or not data:
+                result.append("- No data available")
+                continue
+                
+            try:
+                # Sort data by count (descending)
+                sorted_items = sorted(data.items(), key=lambda x: -1 * x[1] if isinstance(x[1], (int, float)) else 0)
+                
+                # Add top 10 items
+                for item, count in sorted_items[:10]:
+                    result.append(f"- {item}: {count} occurrences")
+                    
+                # Add a note if there are more items
+                if len(sorted_items) > 10:
+                    result.append(f"- ... and {len(sorted_items) - 10} more items")
+            except Exception as e:
+                print(f"Error formatting items for {category}: {str(e)}")
+                result.append("- Error processing items")
+    except Exception as e:
+        print(f"Error in format_log_patterns: {str(e)}")
+        return "Error formatting log patterns."
     
     return "\n".join(result)
 
@@ -1329,7 +1434,9 @@ def analyze_incident_context(incident_data: pd.DataFrame, all_incidents: Dict[st
                     f.write(formatted_patterns + "\n\n")
                     
                     # Add related incidents section
-                    if related_incidents_data:
+                    related_incidents_data = None
+                    related_incidents_text = "No related incidents found."
+                    if 'related_incidents_data' in locals() and related_incidents_data:
                         f.write("5. RELATED INCIDENTS\n")
                         f.write("-------------------\n")
                         f.write(related_incidents_text + "\n\n")
@@ -1338,10 +1445,13 @@ def analyze_incident_context(incident_data: pd.DataFrame, all_incidents: Dict[st
                     f.write("6. INVESTIGATION CONTEXT (Based on Comments):\n")
                     f.write("-----------------------------------------\n")
                     f.write(f"Total Comments: {comment_analysis.get('total_comments', 0)}\n")
-                    f.write(f"LLM Summary: {llm_comment_summary}\n\n")
+                    llm_comment_summary = "No LLM summary of comments available."
+                    f.write(f"Summary: {comment_analysis.get('summary', llm_comment_summary)}\n\n")
                     
                     # Add MITRE ATT&CK section if techniques found
-                    if mitre_techniques:
+                    mitre_techniques = []
+                    technique_details = {}
+                    if 'mitre_techniques' in locals() and mitre_techniques:
                         mitre_info = get_mitre_attack_info(mitre_techniques, technique_details)
                         f.write("7. MITRE ATT&CK TECHNIQUES:\n")
                         f.write("-------------------------\n")
@@ -1982,7 +2092,9 @@ def analyze_security_incidents(excel_path: str = None, tenant_id: str = None, fe
                     f.write(formatted_patterns + "\n\n")
                     
                     # Add related incidents section
-                    if related_incidents_data:
+                    related_incidents_data = None
+                    related_incidents_text = "No related incidents found."
+                    if 'related_incidents_data' in locals() and related_incidents_data:
                         f.write("5. RELATED INCIDENTS\n")
                         f.write("-------------------\n")
                         f.write(related_incidents_text + "\n\n")
@@ -1991,10 +2103,13 @@ def analyze_security_incidents(excel_path: str = None, tenant_id: str = None, fe
                     f.write("6. INVESTIGATION CONTEXT (Based on Comments):\n")
                     f.write("-----------------------------------------\n")
                     f.write(f"Total Comments: {comment_analysis.get('total_comments', 0)}\n")
-                    f.write(f"LLM Summary: {llm_comment_summary}\n\n")
+                    llm_comment_summary = "No LLM summary of comments available."
+                    f.write(f"Summary: {comment_analysis.get('summary', llm_comment_summary)}\n\n")
                     
                     # Add MITRE ATT&CK section if techniques found
-                    if mitre_techniques:
+                    mitre_techniques = []
+                    technique_details = {}
+                    if 'mitre_techniques' in locals() and mitre_techniques:
                         mitre_info = get_mitre_attack_info(mitre_techniques, technique_details)
                         f.write("7. MITRE ATT&CK TECHNIQUES:\n")
                         f.write("-------------------------\n")
@@ -2869,132 +2984,113 @@ def extract_domains_from_alerts(alerts):
     return list(set(filtered))
 
 def format_soc_analyst_report(analysis_output: IncidentAnalysisOutput) -> str:
-    """
-    Format the incident analysis output into a SOC analyst report with immediate actions and future steps.
+    """Format the SOC analyst report into a readable text format with enhanced evidence display"""
+    sections = []
     
-    Args:
-        analysis_output: The IncidentAnalysisOutput object containing analysis results
-        
-    Returns:
-        Formatted report string for display
-    """
-    # Start building the report string
-    report = []
+    # Create header with incident information
+    header = f"""
+===============================================
+        SOC ANALYST REPORT: INCIDENT #{analysis_output.incident_id}
+        {analysis_output.incident_title}
+===============================================
+
+SEVERITY: {analysis_output.severity_indicator}
+
+EXECUTIVE SUMMARY:
+{analysis_output.executive_summary}
+
+"""
+    sections.append(header)
     
-    # Add report header without emoji
-    report.append(f"Security Incident Report: #{analysis_output.metrics_panel.get('incident_number', 'N/A')}")
-    
-    # Add incident classification details
-    if analysis_output.summary:
-        # Extract the title if it's in the summary
-        if isinstance(analysis_output.summary, dict) and analysis_output.summary.get('title'):
-            report.append(f"{analysis_output.summary.get('title')}")
-        elif isinstance(analysis_output.summary, str):
-            # Try to get the first line as the title
-            first_line = analysis_output.summary.split('\n')[0] if '\n' in analysis_output.summary else analysis_output.summary
-            report.append(f"{first_line}")
-    
-    # Add classification, detection source, etc.
-    report.append(f"Classification: {analysis_output.significance if analysis_output.significance != 'Not provided' else 'True Positive'}")
-    report.append(f"Severity: {analysis_output.severity_indicator}")
-    report.append(f"Detection Source: {analysis_output.metrics_panel.get('detection_source', 'ASI Scheduled Alerts')}")
-    
-    # Add MITRE ATT&CK details if available
-    if analysis_output.attack_techniques:
-        if len(analysis_output.attack_techniques) > 0:
-            # Format: Tactic: CommandAndControl
-            tactic = None
-            if '(' in analysis_output.attack_techniques[0]:
-                tactic_part = analysis_output.attack_techniques[0].split('(')[1]
-                if ')' in tactic_part:
-                    tactic = tactic_part.split(')')[0]
-            
-            if not tactic:
-                # Check technique_details for tactic
-                tech_id = analysis_output.attack_techniques[0].split(' ')[0] if ' ' in analysis_output.attack_techniques[0] else analysis_output.attack_techniques[0]
-                if tech_id in analysis_output.technique_details:
-                    tactic = analysis_output.technique_details[tech_id].get('tactic', "Unknown")
-                else:
-                    tactic = "Unknown"
-                
-            report.append(f"Tactic: {tactic}")
-            
-            # Format: Technique: T1071
-            technique_id = analysis_output.attack_techniques[0].split(' ')[0] if ' ' in analysis_output.attack_techniques[0] else "Unknown"
-            report.append(f"Technique: {technique_id}")
-    
-    # Add owner if available
-    owner = analysis_output.metrics_panel.get('owner', 'Unassigned')
-    # Try to extract email from owner JSON if it's a JSON string
-    if isinstance(owner, str) and owner.startswith('{"'):
-        try:
-            owner_data = json.loads(owner)
-            if 'assignedTo' in owner_data:
-                owner = owner_data['assignedTo']
-            elif 'email' in owner_data:
-                owner = owner_data['email']
-        except:
-            pass
-    report.append(f"Owner: {owner}")
-    
-    # Add domain info if available
-    if hasattr(analysis_output, 'threat_intel_context') and analysis_output.threat_intel_context != "Not provided":
-        if isinstance(analysis_output.threat_intel_context, dict):
-            if 'domain' in analysis_output.threat_intel_context:
-                report.append(f"Domain: {analysis_output.threat_intel_context['domain']}")
-                
-                # Add VirusTotal reputation if available
-                vt_rep = analysis_output.threat_intel_context.get('virustotal_reputation', 'Unknown')
-                vt_mal = analysis_output.threat_intel_context.get('malicious_votes', '?')
-                vt_eng = analysis_output.threat_intel_context.get('total_engines', '?')
-                report.append(f"VirusTotal Reputation: {vt_rep} ({vt_mal}/{vt_eng} malicious)")
-    
-    # Add status
-    report.append(f"Status: {analysis_output.metrics_panel.get('status', 'Unknown')}")
-    
-    # Add affected device and most active user if available
-    if hasattr(analysis_output, 'asset_impact_analysis') and analysis_output.asset_impact_analysis != "Not provided":
-        if isinstance(analysis_output.asset_impact_analysis, dict):
-            if 'affected_device' in analysis_output.asset_impact_analysis:
-                report.append(f"Affected Device: {analysis_output.asset_impact_analysis['affected_device']}")
-            if 'most_active_user' in analysis_output.asset_impact_analysis:
-                report.append(f"Most Active User: {analysis_output.asset_impact_analysis['most_active_user']}")
-    
-    # Add a blank line
-    report.append("")
-    
-    # Add immediate actions section without status column
-    report.append("A. Immediate Actions (First 1–2 hours)")
-    report.append("")
-    
+    # Create immediate actions section with narrative format
     if analysis_output.immediate_actions:
+        actions_section = "A. Immediate Actions (First 1-2 hours)\n"
+        
         for action in analysis_output.immediate_actions:
             if isinstance(action, dict):
-                action_desc = action.get('description', '')
-                report.append(f"{action_desc}")
+                # Handle legacy format with description/evidence
+                desc = action.get('description', 'No description')
+                actions_section += f"\n{desc}\n"
+                
+                # Add evidence if available
+                evidence = action.get('evidence', [])
+                if evidence:
+                    actions_section += "EVIDENCE:\n"
+                    for ev in evidence:
+                        actions_section += f"• {ev}\n"
+            else:
+                # Handle new narrative string format
+                actions_section += f"\n{action}\n"
+        
+        sections.append(actions_section)
     
-    # Add future steps section without emoji
-    report.append("B. Future Steps (Next 24 hours)")
-    report.append("Investigation Steps")
-    
+    # Create future steps section with narrative format
     if analysis_output.future_steps:
+        steps_section = "B. Future Steps (Next 24 hours)\n"
+        
         for step in analysis_output.future_steps:
             if isinstance(step, dict):
-                step_desc = step.get('description', '')
+                # Handle legacy format with description/data_points
+                desc = step.get('description', 'No description')
+                steps_section += f"\n{desc}\n"
+                
+                # Add data points if available
                 data_points = step.get('data_points', [])
-                
-                report.append(f"{step_desc}")
-                
                 if data_points:
-                    for point in data_points:
-                        if point:
-                            report.append(f"")
-                            report.append(f"{point}")
-                
-                report.append("")
+                    steps_section += "EVIDENCE:\n"
+                    for dp in data_points:
+                        steps_section += f"• {dp}\n"
+            else:
+                # Handle new narrative string format
+                steps_section += f"\n{step}\n"
+        
+        sections.append(steps_section)
     
-    # Join all parts with newlines and return
-    return "\n".join(report)
+    # Include MITRE ATT&CK techniques if available
+    if hasattr(analysis_output, 'attack_techniques') and analysis_output.attack_techniques:
+        tech_section = "C. MITRE ATT&CK Techniques\n"
+        technique_details = analysis_output.technique_details if hasattr(analysis_output, 'technique_details') else {}
+        
+        for technique in analysis_output.attack_techniques:
+            tech_section += f"\n• {technique}"
+            if technique in technique_details:
+                tech_section += f"\n  {technique_details[technique].get('description', '')}"
+        
+        sections.append(tech_section)
+    
+    # Add threat intelligence context if available
+    if hasattr(analysis_output, 'threat_intel_context') and analysis_output.threat_intel_context and analysis_output.threat_intel_context != "Not provided":
+        if isinstance(analysis_output.threat_intel_context, dict):
+            ti_section = "D. Threat Intelligence Context\n"
+            for k, v in analysis_output.threat_intel_context.items():
+                if k != "raw_data":  # Skip raw data
+                    ti_section += f"\n{k}: {v}"
+            sections.append(ti_section)
+        else:
+            sections.append(f"D. Threat Intelligence Context\n\n{analysis_output.threat_intel_context}")
+    
+    # Add other sections if they exist and have content
+    if hasattr(analysis_output, 'business_impact') and analysis_output.business_impact != {}:
+        if isinstance(analysis_output.business_impact, dict):
+            impact_section = "E. Business Impact Assessment\n"
+            for k, v in analysis_output.business_impact.items():
+                impact_section += f"\n{k}: {v}"
+            sections.append(impact_section)
+        else:
+            sections.append(f"E. Business Impact Assessment\n\n{analysis_output.business_impact}")
+    
+    # Add metrics panel if available
+    if hasattr(analysis_output, 'metrics_panel') and analysis_output.metrics_panel != {}:
+        metrics_section = "F. Key Metrics\n"
+        if isinstance(analysis_output.metrics_panel, dict):
+            for k, v in analysis_output.metrics_panel.items():
+                metrics_section += f"\n{k}: {v}"
+        else:
+            metrics_section += f"\n{analysis_output.metrics_panel}"
+        sections.append(metrics_section)
+    
+    # Combine all sections
+    return "\n\n".join(sections)
 
 def generate_soc_analyst_prompt(incident_data: Dict[str, Any], logs: List[Dict[str, Any]], 
                                indicators: SecurityIndicators, alerts: List[Dict[str, Any]],
@@ -3174,303 +3270,726 @@ def generate_soc_analyst_prompt(incident_data: Dict[str, Any], logs: List[Dict[s
     # Return the combined prompt
     return "\n".join(prompt)
 
+def build_rag_context(incident_data: Dict[str, Any], logs: List[Dict[str, Any]], 
+                      indicators: SecurityIndicators, alerts: List[Dict[str, Any]],
+                      vt_results: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """
+    Build a structured RAG context from all available incident data sources.
+    Returns a dictionary of context sections that can be used for retrieval.
+    """
+    rag_context = {}
+    
+    # 1. Incident details
+    incident_context = []
+    for k, v in incident_data.items():
+        if v and str(v).lower() not in ["nan", "none", "unknown"]:
+            incident_context.append(f"{k}: {v}")
+    rag_context["INCIDENT_DETAILS"] = "\n".join(incident_context)
+    
+    # 2. Associated alerts
+    if alerts:
+        alert_context = []
+        for alert in alerts:
+            alert_info = [
+                f"Alert: {alert.get('alertDisplayName', 'Unknown')}",
+                f"Severity: {alert.get('severity', 'Unknown')}",
+                f"Description: {alert.get('description', 'No description')}",
+                f"Entities: {', '.join([e.get('displayName', 'Unknown') for e in alert.get('entities', [])])}"
+            ]
+            alert_context.append("\n".join(alert_info))
+        rag_context["ASSOCIATED_ALERTS"] = "\n\n".join(alert_context)
+    
+    # 3. VirusTotal domain reputation
+    if vt_results:
+        vt_context = []
+        for domain, results in vt_results.items():
+            vt_context.append(f"Domain: {domain}")
+            vt_context.append(f"Malicious Score: {results.get('malicious_score', 'Unknown')}")
+            vt_context.append(f"Categories: {', '.join(results.get('categories', ['None']))}")
+            vt_context.append(f"Detection Names: {', '.join(results.get('detection_names', ['None']))}")
+        rag_context["VIRUSTOTAL_DOMAIN_REPUTATION"] = "\n".join(vt_context)
+    
+    # 4. Log patterns
+    if logs:
+        # Get summary patterns
+        log_patterns = analyze_log_patterns(logs)
+        pattern_text = format_log_patterns(log_patterns)
+        rag_context["LOG_PATTERNS"] = pattern_text
+        
+        # Add user-domain activity summary if available
+        if indicators.domains:
+            user_domain_summary, user_domain_details = summarize_user_domain_activity(logs, indicators.domains)
+            rag_context["USER_DOMAIN_ACTIVITY"] = user_domain_summary
+    
+    # 5. Indicators summary
+    indicator_context = []
+    for field_name in ["domains", "ips", "external_ips", "internal_ips", "users", "file_hashes", "cves", "urls"]:
+        field_value = getattr(indicators, field_name, [])
+        if field_value:
+            indicator_context.append(f"{field_name.upper()}: {', '.join(field_value)}")
+    rag_context["INDICATORS"] = "\n".join(indicator_context)
+    
+    return rag_context
+
+def generate_triage_summary(enhanced_context: Dict[str, Dict[str, Any]], 
+                           logs: List[Dict[str, Any]],
+                           vt_results: Optional[Dict[str, Any]] = None,
+                           indicators: SecurityIndicators = None) -> str:
+    """
+    Generate a concise triage summary highlighting key findings from enhanced context and log patterns.
+    This is positioned at the beginning of the LLM context to focus attention on critical information.
+    """
+    summary_sections = ["=== KEY FINDINGS FOR TRIAGE ==="]
+    
+    # Extract most active users from logs
+    try:
+        # Ensure logs is properly formatted before analysis
+        if not isinstance(logs, list):
+            print(f"Warning: logs is not a list but {type(logs)}")
+            if isinstance(logs, dict):
+                logs = [logs]
+            else:
+                logs = []
+                
+        log_patterns = analyze_log_patterns(logs)
+        # Ensure log_patterns is a dictionary with proper structure
+        if not isinstance(log_patterns, dict):
+            print(f"Warning: analyze_log_patterns returned non-dictionary type: {type(log_patterns)}")
+            log_patterns = {
+                "destination_ip": {"description": "Most common destination IPs", "data": {}, "summary": "No data available"},
+                "destination_port": {"description": "Most common destination ports", "data": {}, "summary": "No data available"},
+                "source_username": {"description": "Most common usernames", "data": {}, "summary": "No data available"},
+                "device_name": {"description": "Most common device names", "data": {}, "summary": "No data available"},
+                "process_name": {"description": "Most common process names", "data": {}, "summary": "No data available"},
+                "alert_type": {"description": "Most common alert types", "data": {}, "summary": "No data available"},
+                "action": {"description": "Most common actions", "data": {}, "summary": "No data available"},
+            }
+    except Exception as e:
+        print(f"Error fetching or processing logs: {str(e)}")
+        log_patterns = {
+            "destination_ip": {"description": "Most common destination IPs", "data": {}, "summary": "Error occurred"},
+            "destination_port": {"description": "Most common destination ports", "data": {}, "summary": "Error occurred"},
+            "source_username": {"description": "Most common usernames", "data": {}, "summary": "Error occurred"},
+            "device_name": {"description": "Most common device names", "data": {}, "summary": "Error occurred"},
+            "process_name": {"description": "Most common process names", "data": {}, "summary": "Error occurred"},
+            "alert_type": {"description": "Most common alert types", "data": {}, "summary": "Error occurred"},
+            "action": {"description": "Most common actions", "data": {}, "summary": "Error occurred"},
+        }
+    
+    # Use more robust user activity extraction
+    user_activity = {}
+    if log_patterns and "source_username" in log_patterns:
+        try:
+            # First verify 'data' field exists and initialize if needed
+            if not isinstance(log_patterns["source_username"], dict):
+                log_patterns["source_username"] = {"data": {}, "description": "Most common usernames"}
+                
+            if "data" not in log_patterns["source_username"]:
+                log_patterns["source_username"]["data"] = {}
+                
+            pattern_data = log_patterns["source_username"]["data"]
+            
+            if isinstance(pattern_data, dict):
+                # If it's already a dictionary, use it directly
+                user_activity = pattern_data
+            elif isinstance(pattern_data, list):
+                # If it's a list, convert it to a dict by counting occurrences
+                for user in pattern_data:
+                    if isinstance(user, str):
+                        user_activity[user] = user_activity.get(user, 0) + 1
+                print(f"Converted list of users to dictionary with {len(user_activity)} entries")
+            else:
+                print(f"Warning: source_username data has unexpected type: {type(pattern_data)}")
+                # Create empty dictionary to avoid errors
+                user_activity = {}
+        except Exception as e:
+            print(f"Error processing user activity data: {str(e)}")
+            user_activity = {}
+    
+    # Process primary threat domains with defensive checks
+    threat_domains = []
+    if enhanced_context and isinstance(enhanced_context, dict) and "domains" in enhanced_context:
+        try:
+            for domain, data in enhanced_context["domains"].items():
+                if not isinstance(data, dict):
+                    print(f"Warning: domain data for {domain} is not a dictionary")
+                    continue
+                    
+                vt_score = "N/A"
+                vt_category = ""
+                
+                # Check if vt_results exists and has valid domain data
+                if vt_results and isinstance(vt_results, dict) and domain in vt_results:
+                    domain_result = vt_results[domain]
+                    if isinstance(domain_result, dict):
+                        vt_score = domain_result.get("malicious_score", "N/A")
+                        categories = domain_result.get("categories", [])
+                        if isinstance(categories, list) and categories:
+                            vt_category = f", Category: {', '.join(categories[:2])}" 
+                
+                mentions = data.get("mentions", 0)
+                connected_hosts = []
+                if "connected_hosts" in data and isinstance(data["connected_hosts"], list):
+                    connected_hosts = data["connected_hosts"]
+                
+                threat_domains.append((domain, vt_score, vt_category, mentions, len(connected_hosts)))
+        except Exception as e:
+            print(f"Error processing threat domains: {str(e)}")
+    
+    # Sort domains by VT score (if available) and mentions - with error handling
+    try:
+        if threat_domains:
+            def safe_sort_key(x):
+                try:
+                    vt_score = 0
+                    if x[1] != "N/A":
+                        try:
+                            vt_score = float(x[1])
+                        except:
+                            vt_score = 0
+                    mentions = x[3] if isinstance(x[3], (int, float)) else 0
+                    return (-1 * vt_score, -1 * mentions)
+                except:
+                    return (0, 0)
+                    
+            threat_domains.sort(key=safe_sort_key)
+    except Exception as e:
+        print(f"Error sorting threat domains: {str(e)}")
+    
+    # Add primary threat information
+    if threat_domains:
+        try:
+            domain, vt_score, vt_category, mentions, connected_hosts = threat_domains[0]
+            host_info = f" (contacted by {connected_hosts} hosts)" if connected_hosts > 0 else ""
+            summary_sections.append(f"* Primary Threat: Domain {domain} (VT Score: {vt_score}{vt_category}){host_info}")
+        except Exception as e:
+            print(f"Error adding primary threat information: {str(e)}")
+            summary_sections.append("* Primary Threat: Could not determine due to data error")
+    
+    # Find key affected hosts with defensive programming
+    affected_hosts = []
+    if enhanced_context and isinstance(enhanced_context, dict) and "hosts" in enhanced_context:
+        try:
+            for host, data in enhanced_context["hosts"].items():
+                if not isinstance(data, dict):
+                    continue
+                    
+                mentions = data.get("mentions", 0)
+                
+                domains = []
+                if "domains" in data and isinstance(data["domains"], list):
+                    domains = data["domains"]
+                    
+                alerts = []
+                if "alerts" in data and isinstance(data["alerts"], list):
+                    alerts = data["alerts"]
+                    
+                affected_hosts.append((host, mentions, len(domains), len(alerts)))
+        except Exception as e:
+            print(f"Error processing affected hosts: {str(e)}")
+    
+    # Sort hosts by mentions and number of suspicious domains contacted - with error handling
+    try:
+        if affected_hosts:
+            def safe_host_sort_key(x):
+                try:
+                    mentions = x[1] if isinstance(x[1], (int, float)) else 0
+                    domains = x[2] if isinstance(x[2], (int, float)) else 0
+                    alerts = x[3] if isinstance(x[3], (int, float)) else 0
+                    return (-1 * mentions, -1 * domains, -1 * alerts)
+                except:
+                    return (0, 0, 0)
+            
+            affected_hosts.sort(key=safe_host_sort_key)
+    except Exception as e:
+        print(f"Error sorting affected hosts: {str(e)}")
+    
+    # Add key affected host information
+    if affected_hosts:
+        try:
+            host, mentions, domains, alerts = affected_hosts[0]
+            domain_info = f", contacted {domains} suspicious domains" if domains > 0 else ""
+            alert_info = f", {alerts} associated alerts" if alerts > 0 else ""
+            summary_sections.append(f"* Key Affected Host: {host} ({mentions} log mentions{domain_info}{alert_info})")
+        except Exception as e:
+            print(f"Error adding affected host information: {str(e)}")
+            summary_sections.append("* Key Affected Host: Could not determine due to data error")
+    
+    # Find high severity alerts with defensive programming
+    high_severity_alerts = []
+    if enhanced_context and isinstance(enhanced_context, dict) and "alerts" in enhanced_context:
+        try:
+            for alert_id, data in enhanced_context.get("alerts", {}).items():
+                if not isinstance(data, dict):
+                    continue
+                    
+                severity = str(data.get("severity", "")).lower()
+                if severity in ["high", "critical"]:
+                    title = data.get("title", "Unknown Alert")
+                    
+                    entities = []
+                    if "entities" in data and isinstance(data["entities"], list):
+                        entities = data["entities"]
+                        
+                    high_severity_alerts.append((title, severity, entities))
+        except Exception as e:
+            print(f"Error processing high severity alerts: {str(e)}")
+    
+    # Add high severity alert information
+    if high_severity_alerts:
+        try:
+            title, severity, entities = high_severity_alerts[0]
+            entity_info = ""
+            if entities and len(entities) > 0:
+                entity_info = f" on {', '.join(entities[:2])}"
+            summary_sections.append(f"* Associated High-Severity Alert: \"{title}\" ({severity.capitalize()}){entity_info}")
+        except Exception as e:
+            print(f"Error adding high severity alert information: {str(e)}")
+            summary_sections.append("* Associated High-Severity Alert: Could not determine due to data error")
+    
+    # Add key activity information from logs
+    if log_patterns and isinstance(log_patterns, dict):
+        activities = []
+        
+        try:
+            # Check for suspicious ports - with enhanced type checking
+            if "destination_port" in log_patterns and isinstance(log_patterns["destination_port"], dict):
+                port_data = log_patterns["destination_port"].get("data", {})
+                suspicious_ports = ["53", "443", "8080", "4444", "22"]  # Common C2 ports
+                
+                # Handle dictionary format
+                if isinstance(port_data, dict):
+                    for port, count in port_data.items():
+                        if str(port) in suspicious_ports and count > 5:
+                            activities.append(f"Outbound connections on port {port} ({count} occurrences)")
+                # Handle list format
+                elif isinstance(port_data, list):
+                    # Count occurrences of each port
+                    port_counts = {}
+                    for port in port_data:
+                        port_str = str(port)
+                        port_counts[port_str] = port_counts.get(port_str, 0) + 1
+                    # Check for suspicious ports
+                    for port, count in port_counts.items():
+                        if port in suspicious_ports and count > 5:
+                            activities.append(f"Outbound connections on port {port} ({count} occurrences)")
+        except Exception as e:
+            print(f"Error processing port data: {str(e)}")
+        
+        try:
+            # Check for process activity - with enhanced type checking
+            if "process_name" in log_patterns and isinstance(log_patterns["process_name"], dict):
+                process_data = log_patterns["process_name"].get("data", {})
+                suspicious_processes = ["powershell.exe", "cmd.exe", "rundll32.exe", "regsvr32.exe"]
+                
+                # Handle dictionary format
+                if isinstance(process_data, dict):
+                    for process, count in process_data.items():
+                        process_str = str(process).lower()
+                        if any(susp in process_str for susp in suspicious_processes) and count > 3:
+                            activities.append(f"Suspicious process {process} ({count} executions)")
+                # Handle list format
+                elif isinstance(process_data, list):
+                    # Count occurrences of each process
+                    process_counts = {}
+                    for process in process_data:
+                        if process:
+                            process_str = str(process).lower()
+                            process_counts[process_str] = process_counts.get(process_str, 0) + 1
+                    # Check for suspicious processes
+                    for process, count in process_counts.items():
+                        if any(susp in process for susp in suspicious_processes) and count > 3:
+                            activities.append(f"Suspicious process {process} ({count} executions)")
+        except Exception as e:
+            print(f"Error processing process data: {str(e)}")
+        
+        if activities:
+            summary_sections.append(f"* Key Activity: {activities[0]}")
+    
+    # Add activity window if we have timestamps
+    earliest_time = None
+    latest_time = None
+    
+    try:
+        if enhanced_context and isinstance(enhanced_context, dict):
+            for entity_type in ["domains", "hosts", "ips", "users"]:
+                if entity_type in enhanced_context:
+                    for entity, data in enhanced_context.get(entity_type, {}).items():
+                        if not isinstance(data, dict):
+                            continue
+                            
+                        timestamps = data.get("seen_at", [])
+                        if not isinstance(timestamps, list):
+                            continue
+                            
+                        for timestamp in timestamps:
+                            try:
+                                # Try various date parsing strategies
+                                if isinstance(timestamp, datetime):
+                                    dt = timestamp
+                                elif isinstance(timestamp, str):
+                                    try:
+                                        # First try standard ISO format
+                                        dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                                    except ValueError:
+                                        try:
+                                            # Then try pandas parsing
+                                            dt = pd.to_datetime(timestamp)
+                                        except:
+                                            # Lastly try dateutil parser which is more flexible
+                                            try:
+                                                from dateutil.parser import parse
+                                                dt = parse(timestamp)
+                                            except:
+                                                print(f"Could not parse timestamp: {timestamp}")
+                                                continue
+                                else:
+                                    # Skip non-string, non-datetime objects
+                                    continue
+                                    
+                                if earliest_time is None or dt < earliest_time:
+                                    earliest_time = dt
+                                if latest_time is None or dt > latest_time:
+                                    latest_time = dt
+                            except Exception as e:
+                                # Just continue on error parsing a specific timestamp
+                                continue
+    except Exception as e:
+        print(f"Error processing timestamps: {str(e)}")
+    
+    if earliest_time and latest_time:
+        try:
+            # Format timestamps
+            earliest_str = earliest_time.strftime("%Y-%m-%d %H:%M")
+            latest_str = latest_time.strftime("%Y-%m-%d %H:%M")
+            
+            # Calculate duration
+            duration = latest_time - earliest_time
+            if duration.days > 0:
+                duration_str = f"{duration.days} days, {duration.seconds // 3600} hours"
+            elif duration.seconds > 3600:
+                duration_str = f"{duration.seconds // 3600} hours, {(duration.seconds % 3600) // 60} minutes"
+            else:
+                duration_str = f"{duration.seconds // 60} minutes"
+            
+            summary_sections.append(f"* Activity Window: Started {earliest_str}, lasted {duration_str}")
+        except Exception as e:
+            print(f"Error formatting timestamp information: {str(e)}")
+    
+    # Add most active users section with robust error handling
+    try:
+        if user_activity and isinstance(user_activity, dict) and len(user_activity) > 0:
+            summary_sections.append("* Most Active Users (from logs):")
+            # Safely sort user_activity
+            try:
+                sorted_users = sorted(user_activity.items(), key=lambda x: -1 * x[1] if isinstance(x[1], (int, float)) else 0)
+            except Exception as e:
+                print(f"Error sorting user activity: {str(e)}")
+                # Just use the items directly if sorting fails
+                sorted_users = list(user_activity.items())
+                
+            # Limit to top 5 users
+            user_count = 0
+            for user, count in sorted_users:
+                if user_count >= 5:  # Only show top 5
+                    break
+                    
+                if user != "Unknown" and user and str(user).strip():
+                    user_count += 1
+                    connected_domains = []
+                    
+                    # Safely get connected domains
+                    try:
+                        if enhanced_context and isinstance(enhanced_context, dict) and "domains" in enhanced_context:
+                            for domain, data in enhanced_context.get("domains", {}).items():
+                                if isinstance(data, dict) and "connected_users" in data:
+                                    connected_user_list = data.get("connected_users", [])
+                                    if isinstance(connected_user_list, list) and user in connected_user_list:
+                                        connected_domains.append(domain)
+                    except Exception as e:
+                        print(f"Error getting connected domains for user {user}: {str(e)}")
+                    
+                    domain_info = ""
+                    if connected_domains:
+                        domain_info = f", connected to domains: {', '.join(connected_domains[:2])}"
+                        
+                    summary_sections.append(f"  - {user}: {count} occurrences{domain_info}")
+    except Exception as e:
+        print(f"Error adding user activity section: {str(e)}")
+        summary_sections.append("* Most Active Users: Error processing user data")
+    
+    return "\n".join(summary_sections)
+
 def generate_soc_analyst_report(incident_data: Dict[str, Any], logs: List[Dict[str, Any]], 
                               indicators: SecurityIndicators, alerts: List[Dict[str, Any]],
                               example_actions: List[Dict[str, Any]] = None,
                               example_future_steps: List[Dict[str, Any]] = None,
                               threat_intel_context: Optional[Union[str, Dict[str, Any]]] = None) -> IncidentAnalysisOutput: # Added parameters
-    """
-    Generates a SOC analyst report structure using an LLM based on incident data.
-
-    Args:
-        incident_data: Dictionary containing incident information.
-        logs: List of related logs.
-        indicators: SecurityIndicators object with extracted indicators.
-        alerts: List of related alerts.
-        example_actions: Example immediate actions to guide the LLM's formatting (DEPRECATED - Use prompt instructions)
-        example_future_steps: Example future steps to guide the LLM's formatting (DEPRECATED - Use prompt instructions)
-        threat_intel_context: Optional VirusTotal or other threat intel data.
-
-    Returns:
-        IncidentAnalysisOutput: A Pydantic object containing the structured analysis.
-                                Returns a default error object if generation fails.
-    """
-    # 1. Construct the Prompt using user's template + JSON instructions
-    prompt_lines = [
-        "You are an expert SOC Analyst providing a detailed, actionable incident response report for a Windows/Azure environment.",
-        "Generate a structured SOC report in JSON format based ONLY on the provided Incident Details, Indicators, Alert Summary, and Log Summary.",
-        "Your response MUST include 'executive_summary', 'severity_indicator', 'immediate_actions', and 'future_steps' fields.",
-        
-        "## Guidelines for Recommendations:",
-        "1.  **Specificity:** Recommendations MUST reference specific entities (IPs, domains, users, hostnames) identified in the provided data.",
-        "2.  **Action Verbs:** Use clear action verbs (e.g., Block, Isolate, Monitor, Investigate, Review, Analyze, Escalate, Capture).",
-        "3.  **Tools/Logs:** Suggest relevant Windows/Azure tools (PowerShell, Event Logs, Defender, Sentinel KQL) or technologies (Firewall, Proxy, EDR) where appropriate for the action.",
-        "4.  **Context:** Actions should directly relate to the incident type and indicators observed.",
-        "5.  **No Hardcoding:** DO NOT use the exact examples from user prompts; adapt the *style* and *specificity*.",
-        "6.  **Immediate Actions (1-2 hours):** Focus on containment and immediate evidence preservation. Include 3-5 actions. Each action is a JSON object: `{\"description\": \"Specific action using entity X with tool Y...\"}`.",
-        "7.  **Future Steps (Next 24 hours):** Focus on deeper investigation, scope analysis, and enrichment. Include 3-5 steps. Each step is a JSON object: `{\"description\": \"Investigate entity X using log source Y...\", \"data_points\": [\"Evidence point A from logs\", \"Indicator B correlated...\"]`. Data points MUST be derived from the provided summaries, not raw file paths.",
-        "8.  **Output:** Ensure the final output is a single, valid JSON object matching the IncidentAnalysisOutput structure.",
-        
-        "\n---", # Removed extra newline character
-        "### INCIDENT DETAILS",
-        f"Incident Number: {incident_data.get('incident_number', 'N/A')}",
-        f"Title: {incident_data.get('title', 'N/A')}",
-        f"Severity: {incident_data.get('severity', 'N/A')}",
-        f"Status: {incident_data.get('status', 'N/A')}",
-        f"Owner: {incident_data.get('owner', 'N/A')}",
-        f"Classification: {incident_data.get('classification', 'N/A')}",
-        "\n---", # Removed extra newline character
-        "### THREAT INTEL & INDICATORS"
-    ]
+    """Generate a comprehensive SOC analyst report using local LLM with enhanced RAG context"""
     
-    # Add Domains
-    if indicators.domains:
-        prompt_lines.append(f"Domains: {', '.join(indicators.domains)}")
-    
-    # Add Threat Intel Context (like VirusTotal) if available and passed to the function
-    if threat_intel_context and threat_intel_context != "Not provided":
-        if isinstance(threat_intel_context, dict):
-            vt_rep = threat_intel_context.get('virustotal_reputation', 'N/A')
-            if vt_rep != 'N/A':
-                vt_mal = threat_intel_context.get('malicious_votes', '?')
-                vt_eng = threat_intel_context.get('total_engines', '?')
-                prompt_lines.append(f"VirusTotal ({threat_intel_context.get('domain', 'related domain')}): {vt_rep} ({vt_mal}/{vt_eng} malicious)")
-        elif isinstance(threat_intel_context, str):
-             prompt_lines.append(f"Threat Intel Context: {threat_intel_context}")
-
-    # Add other indicators
-    if indicators.ips: prompt_lines.append(f"IPs: {', '.join(indicators.ips)}")
-    if indicators.users: prompt_lines.append(f"Users: {', '.join(indicators.users)}")
-    if indicators.processes: prompt_lines.append(f"Processes: {', '.join(indicators.processes)}")
-    if indicators.urls: prompt_lines.append(f"URLs: {', '.join(indicators.urls)}")
-    if indicators.file_hashes: prompt_lines.append(f"File Hashes: {', '.join(indicators.file_hashes)}")
-
-    prompt_lines.append("\n---")
-    
-    # Add Alerts Summary with more detailed information when available
-    if alerts:
-        alert_names = [alert.get('AlertName', alert.get('DisplayName', 'Unknown Alert')) for alert in alerts[:5]] # Max 5 alerts
-        prompt_lines.append("### RELATED ALERTS (Sample)")
-        for i, alert in enumerate(alerts[:5]):
-            name = alert.get('AlertName', alert.get('DisplayName', 'Unknown Alert'))
-            severity = alert.get('AlertSeverity', 'Unknown')
-            desc = alert.get('Description', '')[:200]
-            if desc:
-                desc = f" - {desc}"
-            prompt_lines.append(f"- Alert {i+1}: {name} (Severity: {severity}){desc}")
-        if len(alerts) > 5: prompt_lines.append("- ... and more")
-        prompt_lines.append("\n---")
-
-    # Add Log Summary with more detailed information
-    if logs:
-        prompt_lines.append("### LOG SUMMARY (Sample Patterns)")
-        
-        # Extract top IPs with more context
-        ip_counts = {}
-        ip_context = {}
-        for log in logs:
-            src_ip = log.get('SourceIP')
-            dst_ip = log.get('DestinationIP')
-            action = log.get('DeviceAction', log.get('SimplifiedDeviceAction', 'Unknown'))
-            hostname = log.get('Computer', log.get('DeviceName', log.get('HostName')))
-            
-            if src_ip:
-                ip_counts[src_ip] = ip_counts.get(src_ip, 0) + 1
-                if src_ip not in ip_context:
-                    ip_context[src_ip] = {'actions': set(), 'destinations': set(), 'hostnames': set()}
-                ip_context[src_ip]['actions'].add(action)
-                if dst_ip:
-                    ip_context[src_ip]['destinations'].add(dst_ip)
-                if hostname:
-                    ip_context[src_ip]['hostnames'].add(hostname)
-                    
-            if dst_ip:
-                ip_counts[dst_ip] = ip_counts.get(dst_ip, 0) + 1
-                if dst_ip not in ip_context:
-                    ip_context[dst_ip] = {'actions': set(), 'sources': set(), 'hostnames': set()}
-                if src_ip:
-                    ip_context[dst_ip]['sources'].add(src_ip)
-                if hostname:
-                    ip_context[dst_ip]['hostnames'].add(hostname)
-                
-        top_ips = sorted(ip_counts.items(), key=lambda item: item[1], reverse=True)[:3]
-        if top_ips:
-            prompt_lines.append("Top IPs Mentioned:")
-            for ip, count in top_ips:
-                context_str = ""
-                if ip in ip_context:
-                    hosts = list(ip_context[ip]['hostnames'])[:2]
-                    if hosts:
-                        context_str += f" associated with hosts: {', '.join(hosts)}"
-                    actions = list(ip_context[ip].get('actions', set()))[:2]
-                    if actions and actions != ['Unknown']:
-                         context_str += f" involved in actions: {', '.join(actions)}"
-                prompt_lines.append(f"- {ip} ({count}x occurrences){context_str}")
-
-        # Extract most active users with more context
-        user_counts = {}
-        user_context = {}
-        for log in logs:
-            user = log.get('SourceUserName', log.get('UserName'))
-            if user and user != 'N/A': # Filter out N/A users
-                user_counts[user] = user_counts.get(user, 0) + 1
-                if user not in user_context:
-                    user_context[user] = {'ips': set(), 'actions': set(), 'hosts': set()}
-                if log.get('SourceIP'):
-                    user_context[user]['ips'].add(log.get('SourceIP'))
-                action = log.get('DeviceAction', log.get('SimplifiedDeviceAction', log.get('Activity', 'Unknown')))
-                if action != 'Unknown': user_context[user]['actions'].add(action)
-                hostname = log.get('Computer', log.get('DeviceName', log.get('HostName')))
-                if hostname: user_context[user]['hosts'].add(hostname)
-                
-        top_users = sorted(user_counts.items(), key=lambda item: item[1], reverse=True)[:3]
-        if top_users:
-            prompt_lines.append("\nMost Active Users Mentioned:")
-            for user, count in top_users:
-                context_str = ""
-                if user in user_context:
-                    hosts = list(user_context[user]['hosts'])[:2]
-                    actions = list(user_context[user]['actions'])[:2]
-                    if hosts:
-                        context_str += f" on hosts: {', '.join(hosts)}"
-                    if actions:
-                        context_str += f" performing actions: {', '.join(actions)}"
-                prompt_lines.append(f"- {user} ({count}x activities){context_str}")
-        
-        # Extract devices with more context
-        device_counts = {}
-        device_context = {}
-        for log in logs:
-            device = log.get('Computer', log.get('DeviceName', log.get('HostName')))
-            if device:
-                device_counts[device] = device_counts.get(device, 0) + 1
-                if device not in device_context:
-                    device_context[device] = {'ips': set(), 'actions': set()}
-                ip = log.get('SourceIP', log.get('DestinationIP'))
-                if ip: device_context[device]['ips'].add(ip)
-                action = log.get('DeviceAction', log.get('SimplifiedDeviceAction', log.get('Activity', 'Unknown')))
-                if action != 'Unknown': device_context[device]['actions'].add(action)
-
-        top_devices = sorted(device_counts.items(), key=lambda item: item[1], reverse=True)[:3]
-        if top_devices:
-            prompt_lines.append("\nMost Mentioned Devices:")
-            for dev, count in top_devices:
-                context_str = ""
-                if dev in device_context:
-                    actions = list(device_context[dev]['actions'])[:2]
-                    ips = list(device_context[dev]['ips'])[:2]
-                    if actions:
-                        context_str += f" involved in actions: {', '.join(actions)}"
-                    if ips:
-                         context_str += f" communicating with IPs: {', '.join(ips)}"
-                prompt_lines.append(f"- {dev} ({count}x occurrences){context_str}")
-
-        # Extract destination ports, urls or other relevant patterns
-        ports = {}
-        for log in logs:
-            port = log.get('DestinationPort')
-            if port:
-                ports[port] = ports.get(port, 0) + 1
-        top_ports = sorted(ports.items(), key=lambda item: item[1], reverse=True)[:3]
-        if top_ports:
-            prompt_lines.append("\nTop Destination Ports Mentioned:")
-            for port, count in top_ports:
-                prompt_lines.append(f"- Port {port} ({count}x occurrences)")
-
-        prompt_lines.append("\n---")
-
-    # Final instruction
-    prompt_lines.append("\nGenerate the final JSON output based on the analysis of the provided data and following all instructions.")
-    prompt = "\n".join(prompt_lines)
-
-    # Prepare context for fallbacks
+    # Get the same essential values used in the prompt
     primary_domain = indicators.domains[0] if indicators.domains else None
-    primary_ip = indicators.ips[0] if indicators.ips else None
-    primary_user = indicators.users[0] if indicators.users else (top_users[0][0] if top_users else None)
+    primary_ip = indicators.external_ips[0] if indicators.external_ips else (indicators.ips[0] if indicators.ips else None)
+    primary_user = indicators.users[0] if indicators.users else None
+    
+    # Get top 5 entities from logs
+    device_counts = {}
+    user_counts = {}
+    ip_counts = {}
+    
+    for log in logs:
+        device = log.get('device', log.get('Computer', log.get('DeviceName', None)))
+        if device:
+            device_counts[device] = device_counts.get(device, 0) + 1
+            
+        user = log.get('user', log.get('User', log.get('UserName', None)))
+        if user:
+            user_counts[user] = user_counts.get(user, 0) + 1
+            
+        ip = log.get('ip', log.get('IpAddress', log.get('IPAddress', None)))
+        if ip:
+            ip_counts[ip] = ip_counts.get(ip, 0) + 1
+    
+    # Sort by count
+    top_devices = sorted(device_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    top_users = sorted(user_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    top_ips = sorted(ip_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+    
+    # Get primary device if available
     primary_device = top_devices[0][0] if top_devices else None
+    
+    # Build enhanced RAG context from all available data sources
+    print("Building enhanced entity-centric RAG context from incident data...")
+    vt_results = None
+    if VIRUSTOTAL_AVAILABLE and indicators.domains:
+        try:
+            # Get VirusTotal results for domains if available
+            vt_results = analyze_domains(indicators.domains)
+            print(f"Added VirusTotal data for {len(vt_results)} domains to RAG context")
+        except Exception as e:
+            print(f"Error fetching VirusTotal data: {str(e)}")
+    
+    # Build and format the enhanced RAG context
+    enhanced_context = build_enhanced_rag_context(incident_data, logs, indicators, alerts, vt_results)
+    
+    # NEW: Generate the key findings for triage summary
+    print("Extracting key findings for triage from enhanced context...")
+    triage_summary = generate_triage_summary(enhanced_context, logs, vt_results, indicators)
+    print("Key triage findings extracted")
+    
+    # Format the complete context
+    formatted_context = format_enhanced_rag_context(enhanced_context)
+    print(f"Created enhanced entity-centric RAG context with {len(enhanced_context['domains'])} domains, {len(enhanced_context['hosts'])} hosts, {len(enhanced_context['users'])} users")
+    
+    # Generate the SOC analyst prompt
+    base_prompt = generate_soc_analyst_prompt(incident_data, logs, indicators, alerts, example_actions, example_future_steps)
+    
+    # Create enhanced prompt with simplified evidence instructions to improve LLM reliability
+    evidence_instructions = """
+### Evidence-Based Response Requirements:
+1. For EACH immediate action and future step, include specific evidence from the context.
+2. Keep your evidence concise and focused on the key facts.
+3. Reference specific entities, activities, and relationships from the context.
+4. Pay special attention to the KEY FINDINGS FOR TRIAGE section which highlights critical information.
+"""
+    
+    # Combine the base prompt with enhanced evidence instructions and prepend the triage summary
+    enhanced_prompt = f"{base_prompt}\n\n{evidence_instructions}\n\n{triage_summary}\n\n=== ENHANCED CONTEXT FOR EVIDENCE-BASED RECOMMENDATIONS ===\n\n{formatted_context}"
+    print(f"Created enhanced prompt with evidence requirements and triage summary ({len(enhanced_prompt)} chars)")
 
-    # 2. Call LocalLLM using the integration module
+    # Call LocalLLM using the integration module
     try:
-        print("Generating SOC analyst report structure with local LLM...")
+        print("Generating evidence-based SOC analyst report with local LLM...")
         
         async def generate_with_local_llm():
             # Get LocalLLM client
             llm_client = await get_local_llm_client(model=OLLAMA_MODEL)
             
-            # Generate JSON response
-            system_prompt = "You are an expert SOC analyst providing detailed, actionable security incident analysis in JSON format."
-            response_data = await llm_client.generate_json(
-                prompt=prompt,
-                system_prompt=system_prompt,
-                schema=IncidentAnalysisOutput.model_json_schema()
-            )
-            return response_data
-        
+            # Generate JSON response with simplified schema to improve reliability
+            system_prompt = """You are an expert SOC analyst providing detailed, actionable security incident analysis.
+            
+Your response must be valid JSON with the following essential fields:
+- executive_summary: A brief summary of the incident, its impact, and required actions
+- severity_indicator: One of "Critical", "High", "Medium", or "Low"
+- immediate_actions: An array of strings, each describing a specific action with embedded evidence
+- future_steps: An array of strings, each describing an investigation step with embedded evidence
+
+Format each immediate action and future step as a complete sentence that:
+1. Clearly states the specific action to take
+2. Incorporates key entities (domains, IPs, users, systems) directly in the text
+3. References specific evidence without requiring separate fields
+
+For example:
+- "Block domain ecomicrolab.com across firewall, proxy, and endpoint systems to prevent further malicious communication."
+- "Isolate systems that have interacted with the domain, such as the device with IP 10.248.28.157, to contain any potential threat."
+- "Review DNS logs (Event ID 22) across endpoints for queries related to ecomicrolab.com or similar variations."
+
+Focus on the entities and relationships highlighted in the KEY FINDINGS FOR TRIAGE section.
+Create detailed, specific actions that reference actual entities from the data.
+"""
+            
+            # Create a simplified schema with only essential fields to improve reliability
+            simplified_schema = {
+                "type": "object",
+                "properties": {
+                    "executive_summary": {"type": "string", "description": "2-3 sentence summary of the incident"},
+                    "severity_indicator": {"type": "string", "enum": ["Critical", "High", "Medium", "Low"]},
+                    "immediate_actions": {
+                        "type": "array",
+                        "items": {"type": "string", "description": "Narrative action with embedded evidence"}
+                    },
+                    "future_steps": {
+                        "type": "array",
+                        "items": {"type": "string", "description": "Narrative investigation step with embedded evidence"}
+                    }
+                },
+                "required": ["executive_summary", "severity_indicator", "immediate_actions", "future_steps"]
+            }
+            
+            try:
+                response_data = await llm_client.generate_json(
+                    prompt=enhanced_prompt,
+                    system_prompt=system_prompt,
+                    schema=simplified_schema
+                )
+                return response_data
+            except Exception as e:
+                print(f"Error generating JSON with LLM: {str(e)}")
+                # Return a basic structure that will trigger fallbacks
+                return {"error": f"Failed to generate valid JSON: {str(e)}"}
+                
         # Run the async function
         loop = asyncio.get_event_loop()
         analysis_data = loop.run_until_complete(generate_with_local_llm())
-        print("Local LLM response received.")
+        print("Evidence-enhanced LLM response received.")
 
         # Create fallback actions and steps based on available data (Windows focused, matching user examples style)
         fallback_actions = []
         if primary_domain:
+            vt_evidence = ""
+            if vt_results and primary_domain in vt_results:
+                vt_score = vt_results[primary_domain].get("malicious_score", "Unknown")
+                vt_evidence = f" [VT Score: {vt_score}]"
+                
+            domain_hosts = []
+            domain_users = []
+            if primary_domain in enhanced_context["domains"]:
+                domain_hosts = enhanced_context["domains"][primary_domain].get("connected_hosts", [])
+                domain_users = enhanced_context["domains"][primary_domain].get("connected_users", [])
+            
+            host_evidence = f", accessed by {len(domain_hosts)} systems" if domain_hosts else ""
+            user_evidence = f", accessed by users: {', '.join(domain_users[:3])}" if domain_users else ""
+            
             fallback_actions.append({
-                "description": f"Block domain {primary_domain} at Firewall/Proxy/DNS Filter levels."
+                "description": f"Block domain {primary_domain} at Firewall/Proxy/DNS Filter levels{vt_evidence}{host_evidence}.",
+                "evidence": [
+                    f"Domain found in incident indicators",
+                    f"VT Reputation: {vt_results[primary_domain].get('malicious_score', 'Unknown')}" if vt_results and primary_domain in vt_results else "No VT data available",
+                    f"Connected systems: {', '.join(domain_hosts[:3])}" if domain_hosts else "No systems found in logs"
+                ]
             })
-            fallback_actions.append({
-                "description": f"Check reputation of domain {primary_domain} using VirusTotal or other TI source."
-            })
-        if primary_ip:
-            fallback_actions.append({
-                "description": f"Block IP address {primary_ip} using Windows Firewall: `netsh advfirewall firewall add rule name=\"Block Incident IP {primary_ip}\" dir=in action=block remoteip={primary_ip}` (run for dir=out too)."
-            })
+        
         if primary_device:
-             fallback_actions.append({
-                "description": f"Isolate system {primary_device} from the network (via EDR, VLAN change, or port disable) to contain potential threat."
-            })
-        if primary_user:
+            device_data = enhanced_context["hosts"].get(primary_device, {})
+            domains = device_data.get("domains", [])
+            users = device_data.get("users", [])
+            activities = device_data.get("activities", [])
+            
+            domain_evidence = f", contacted suspicious domains: {', '.join(domains[:2])}" if domains else ""
+            activity_evidence = f", performed actions: {', '.join(activities[:2])}" if activities else ""
+            
             fallback_actions.append({
-                "description": f"Monitor account {primary_user} closely for suspicious activity. Consider temporary disablement if high risk is confirmed."
+                "description": f"Isolate system {primary_device} from the network{domain_evidence}{activity_evidence}.",
+                "evidence": [
+                    f"System appeared {device_data.get('mentions', 0)} times in logs",
+                    f"Connected to domains: {', '.join(domains[:3])}" if domains else "No domain connections found",
+                    f"Users on system: {', '.join(users[:3])}" if users else "No users found in logs"
+                ]
             })
+        
+        if primary_user:
+            user_data = enhanced_context["users"].get(primary_user, {})
+            hosts = user_data.get("hosts", [])
+            domains = user_data.get("domains", [])
+            activities = user_data.get("activities", [])
+            
+            host_evidence = f", accessed systems: {', '.join(hosts[:2])}" if hosts else ""
+            domain_evidence = f", accessed suspicious domains: {', '.join(domains[:2])}" if domains else ""
+            
+            fallback_actions.append({
+                "description": f"Monitor account {primary_user} closely for suspicious activity{host_evidence}{domain_evidence}.",
+                "evidence": [
+                    f"User appeared {user_data.get('mentions', 0)} times in logs",
+                    f"Accessed systems: {', '.join(hosts[:3])}" if hosts else "No system access found",
+                    f"Accessed domains: {', '.join(domains[:3])}" if domains else "No domain access found"
+                ]
+            })
+        
+        # More evidence-based fallback actions
         fallback_actions.append({
-            "description": "Capture volatile memory and disk image from key involved system(s) for forensic analysis."
-        })
-        fallback_actions.append({
-            "description": "Escalate to Level 2 SOC or Incident Response team for deeper investigation."
+            "description": "Capture volatile memory and disk image from involved systems for forensic analysis.",
+            "evidence": [
+                f"Multiple systems involved: {', '.join([h for h, _ in top_devices[:3]])}",
+                f"Suspicious activities observed across {len(enhanced_context['hosts'])} systems",
+                "Memory forensics needed to identify potential malware/persistence"
+            ]
         })
         
+        # Create evidence-based fallback future steps
         fallback_steps = []
         if primary_domain:
+            domain_data = enhanced_context["domains"].get(primary_domain, {})
+            hosts = domain_data.get("connected_hosts", [])
+            users = domain_data.get("connected_users", [])
+            
+            host_evidence = f"Domain connected to {len(hosts)} systems" if hosts else "No systems found connecting to domain"
+            user_evidence = f"Domain accessed by {len(users)} users" if users else "No users found accessing domain"
+            
             fallback_steps.append({
-                "description": f"Review DNS logs (Windows Event Log or Sysmon ID 22) across endpoints for queries related to {primary_domain} or similar variations.",
-                "data_points": [f"Domain {primary_domain} identified as key indicator"]
+                "description": f"Review DNS logs (Event ID 22) across endpoints for queries related to {primary_domain} or similar variations.",
+                "data_points": [
+                    f"Domain {primary_domain} identified as key indicator",
+                    host_evidence,
+                    user_evidence
+                ]
             })
-        if primary_ip:
-            ip_count = ip_counts.get(primary_ip, 0) if 'ip_counts' in locals() else 0
-            fallback_steps.append({
-                "description": f"Analyze firewall/network logs (e.g., using Sentinel KQL) for all traffic to/from IP {primary_ip} to identify communication patterns and scope.",
-                "data_points": [f"IP {primary_ip} observed {ip_count} times in log summary"]
-            })
-        if primary_user:
-            user_count = user_counts.get(primary_user, 0) if 'user_counts' in locals() else 0
-            fallback_steps.append({
-                "description": f"Audit Azure AD sign-in and UAL logs for user {primary_user}, focusing on unusual times, locations, or application access.",
-                "data_points": [f"User {primary_user} involved in {user_count} logged activities"]
-            })
+        
         if primary_device:
-            dev_count = device_counts.get(primary_device, 0) if 'device_counts' in locals() else 0
+            device_data = enhanced_context["hosts"].get(primary_device, {})
+            domains = device_data.get("domains", [])
+            ips = device_data.get("ips", [])
+            
+            domain_evidence = f"System contacted {len(domains)} domains" if domains else "No domains found"
+            ip_evidence = f"System connected to {len(ips)} IPs" if ips else "No IP connections found"
+            
             fallback_steps.append({
-                "description": f"Investigate process execution logs (Security Event ID 4688 or Sysmon ID 1) on host {primary_device} around the time of the incident.",
-                "data_points": [f"Device {primary_device} mentioned {dev_count} times in logs"]
+                "description": f"Investigate process execution logs (Security ID 4688) on host {primary_device} around the time of the incident.",
+                "data_points": [
+                    f"System {primary_device} mentioned {device_data.get('mentions', 0)} times in logs",
+                    domain_evidence,
+                    ip_evidence
+                ]
             })
+        
+        # Add the rest of the fallback steps...
         fallback_steps.append({
-            "description": "Search EDR/Antivirus logs across the environment for alerts related to the identified indicators (domains, IPs, hashes).",
-            "data_points": ["Multiple indicators identified requiring environment-wide check"]
+            "description": "Search EDR/Antivirus logs across the environment for alerts related to the identified indicators.",
+            "data_points": [
+                f"Multiple indicators identified: {len(indicators.domains)} domains, {len(indicators.ips)} IPs",
+                f"Alert correlation needed across {len(enhanced_context['hosts'])} systems",
+                f"{len(enhanced_context['alerts'])} alerts already associated with this incident"
+            ]
         })
-        fallback_steps.append({
-            "description": "Analyze proxy logs for connections to identified malicious domains/URLs to understand user interaction.",
-             "data_points": [f"Indicators include domains/URLs: {str(indicators.domains)}, {str(indicators.urls)}"]
-        })
+        
+        if indicators.domains:
+            fallback_steps.append({
+                "description": "Analyze proxy logs for connections to identified malicious domains to understand user interaction patterns.",
+                "data_points": [
+                    f"Domains identified: {', '.join(indicators.domains[:3])}" + (f" and {len(indicators.domains)-3} more" if len(indicators.domains) > 3 else ""),
+                    f"Domains accessed by {sum(len(d.get('connected_users', [])) for d in enhanced_context['domains'].values())} users",
+                    f"Timeline analysis needed to establish access sequence"
+                ]
+            })
         
         # 3. Parse and Validate with Pydantic
         try:
@@ -3479,18 +3998,43 @@ def generate_soc_analyst_report(incident_data: Dict[str, Any], logs: List[Dict[s
                 print(f"Error from LLM client: {analysis_data['error']}")
                 analysis_data = {}  # Use empty dict to trigger fallbacks
             
+            # Prepare actions and steps, ensuring they are in the right format
+            immediate_actions = analysis_data.get("immediate_actions", [])
+            if not immediate_actions:
+                # Create narrative string fallbacks if none from LLM
+                immediate_actions = [
+                    f"Block domain {primary_domain} across firewall, proxy, and endpoint systems to prevent further malicious communication.",
+                    f"Isolate system {primary_device} from the network to contain any potential threat.",
+                    f"Monitor account {primary_user} closely for suspicious activity."
+                ] if primary_domain and primary_device and primary_user else fallback_actions[:5]
+            elif not isinstance(immediate_actions[0], str):
+                # Convert dictionary actions to narrative strings if needed
+                immediate_actions = convert_fallbacks_to_narrative_format(immediate_actions)
+            
+            future_steps = analysis_data.get("future_steps", [])
+            if not future_steps:
+                # Create narrative string fallbacks if none from LLM
+                future_steps = [
+                    f"Review DNS logs (Event ID 22) across endpoints for queries related to {primary_domain} or similar variations.",
+                    f"Investigate process execution logs (Security ID 4688) on host {primary_device} around the time of the incident.",
+                    f"Search EDR/Antivirus logs across the environment for alerts related to the identified indicators."
+                ] if primary_domain and primary_device else fallback_steps[:5]
+            elif not isinstance(future_steps[0], str):
+                # Convert dictionary steps to narrative strings if needed
+                future_steps = convert_fallbacks_to_narrative_format(future_steps)
+            
             # Merge analysis_data with required fields potentially missing from LLM response
             merged_data = {
-                "incident_id": incident_data.get('incident_number', 'N/A'),
+                "incident_id": str(incident_data.get('incident_number', 'N/A')),
                 "executive_summary": analysis_data.get("executive_summary", "Security incident involving potentially suspicious network activity detected. Immediate actions required to contain potential threat by blocking indicators and isolating systems. Further investigation needed to determine full scope and impact."),
                 "severity": analysis_data.get("severity", incident_data.get("severity", "Medium")),
                 "incident_title": incident_data.get('title', 'N/A'),
                 "severity_indicator": analysis_data.get("severity_indicator", incident_data.get("severity", "Medium")),
-                "immediate_actions": analysis_data.get("immediate_actions", []) or fallback_actions[:5],  # Use fallbacks if empty, limit length
-                "future_steps": analysis_data.get("future_steps", []) or fallback_steps[:5],  # Use fallbacks if empty, limit length
+                "immediate_actions": immediate_actions,
+                "future_steps": future_steps,
                 "identified_techniques": analysis_data.get("identified_techniques", []),
                 "metrics_panel": indicators.metrics_panel if hasattr(indicators, 'metrics_panel') else {
-                     "incident_number": incident_data.get('incident_number', 'N/A'),
+                     "incident_number": str(incident_data.get('incident_number', 'N/A')), # Also convert here
                      "status": incident_data.get('status', 'N/A'),
                      "owner": incident_data.get('owner', 'N/A'),
                      "detection_source": "ASI Scheduled Alerts" # Default or derive
@@ -3519,14 +4063,32 @@ def generate_soc_analyst_report(incident_data: Dict[str, Any], logs: List[Dict[s
         except pydantic.ValidationError as e:
             print(f"LLM Error: JSON does not match Pydantic model:\n{e}")
             # Create a fallback analysis with generic but useful recommendations
+            
+            # Create string-style fallbacks
+            string_fallback_actions = [
+                f"Block domain {primary_domain} across firewall, proxy, and endpoint systems to prevent further malicious communication.",
+                f"Isolate system {primary_device} from the network to contain any potential threat.",
+                f"Monitor account {primary_user} closely for suspicious activity.",
+                f"Capture volatile memory and disk image from involved systems for forensic analysis.",
+                f"Escalate the incident to Level 2 SOC analysts for deeper investigation."
+            ] if primary_domain and primary_device and primary_user else convert_fallbacks_to_narrative_format(fallback_actions[:5])
+            
+            string_fallback_steps = [
+                f"Review DNS logs across endpoints for queries related to {primary_domain} or similar variations.",
+                f"Investigate process execution logs on host {primary_device} around the time of the incident.",
+                f"Search EDR/Antivirus logs across the environment for alerts related to the identified indicators.",
+                f"Analyze proxy logs for connections to identified malicious domains to understand user interaction patterns.",
+                f"Audit user activity logs to assess the behavior of potentially compromised users."
+            ] if primary_domain and primary_device else convert_fallbacks_to_narrative_format(fallback_steps[:5])
+            
             fallback_analysis = IncidentAnalysisOutput(
-                incident_id=incident_data.get('incident_number', 'N/A'),
+                incident_id=str(incident_data.get('incident_number', 'N/A')),
                 severity="Medium",
                 incident_title=incident_data.get('title', 'N/A'),
-                executive_summary="Security incident requiring investigation. Generated fallback recommendations due to LLM response error.",
+                executive_summary="Security incident requiring investigation. Generated fallback recommendations with evidence due to LLM response error.",
                 severity_indicator="Medium",
-                immediate_actions=fallback_actions[:5],
-                future_steps=fallback_steps[:5],
+                immediate_actions=string_fallback_actions,
+                future_steps=string_fallback_steps,
                 identified_techniques=[]
             )
             return fallback_analysis
@@ -3534,18 +4096,492 @@ def generate_soc_analyst_report(incident_data: Dict[str, Any], logs: List[Dict[s
     except Exception as e:
         print(f"Error during LLM call or processing: {str(e)}")
         traceback.print_exc()
+        # Create string-style fallbacks
+        string_fallback_actions = [
+            f"Block domain {primary_domain} across firewall, proxy, and endpoint systems to prevent further malicious communication.",
+            f"Isolate system {primary_device} from the network to contain any potential threat.",
+            f"Monitor account {primary_user} closely for suspicious activity.",
+            f"Capture volatile memory and disk image from involved systems for forensic analysis.",
+            f"Escalate the incident to Level 2 SOC analysts for deeper investigation."
+        ] if primary_domain and primary_device and primary_user else convert_fallbacks_to_narrative_format(fallback_actions[:5])
+        
+        string_fallback_steps = [
+            f"Review DNS logs across endpoints for queries related to {primary_domain} or similar variations.",
+            f"Investigate process execution logs on host {primary_device} around the time of the incident.",
+            f"Search EDR/Antivirus logs across the environment for alerts related to the identified indicators.",
+            f"Analyze proxy logs for connections to identified malicious domains to understand user interaction patterns.",
+            f"Audit user activity logs to assess the behavior of potentially compromised users."
+        ] if primary_domain and primary_device else convert_fallbacks_to_narrative_format(fallback_steps[:5])
+        
         # Create fallback recommendations
         fallback_analysis = IncidentAnalysisOutput(
-            incident_id=incident_data.get('incident_number', 'N/A'),
+            incident_id=str(incident_data.get('incident_number', 'N/A')),
             severity="Medium",
             incident_title=incident_data.get('title', 'N/A'),
-            executive_summary=f"Error in report generation. Using fallback recommendations.",
+            executive_summary=f"Error in report generation. Using fallback evidence-based recommendations.",
             severity_indicator="Medium",
-            immediate_actions=fallback_actions[:5],
-            future_steps=fallback_steps[:5],
+            immediate_actions=string_fallback_actions,
+            future_steps=string_fallback_steps,
             identified_techniques=[]
         )
         return fallback_analysis
+
+def build_enhanced_rag_context(incident_data: Dict[str, Any], logs: List[Dict[str, Any]], 
+                      indicators: SecurityIndicators, alerts: List[Dict[str, Any]],
+                      vt_results: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
+    """
+    Build an enhanced, entity-centric RAG context from all available incident data sources.
+    Returns a dictionary organized by entity type for more targeted retrieval.
+    """
+    # Initialize entity-centric context structure
+    enhanced_context = {
+        "domains": defaultdict(dict),
+        "ips": defaultdict(dict),
+        "hosts": defaultdict(dict),
+        "users": defaultdict(dict),
+        "incident": {},
+        "alerts": [],
+        "patterns": {}
+    }
+    
+    # 1. Process incident details
+    for k, v in incident_data.items():
+        if v and str(v).lower() not in ["nan", "none", "unknown"]:
+            enhanced_context["incident"][k] = v
+    
+    # 2. Process domain information including VirusTotal results
+    for domain in indicators.domains:
+        enhanced_context["domains"][domain]["mentions"] = 0
+        enhanced_context["domains"][domain]["connected_hosts"] = set()
+        enhanced_context["domains"][domain]["connected_users"] = set()
+        enhanced_context["domains"][domain]["seen_at"] = []
+        
+        # Add VirusTotal context if available
+        if vt_results and domain in vt_results:
+            enhanced_context["domains"][domain]["virustotal"] = {
+                "malicious_score": vt_results[domain].get("malicious_score", "Unknown"),
+                "categories": vt_results[domain].get("categories", []),
+                "detection_names": vt_results[domain].get("detection_names", []),
+                "first_seen": vt_results[domain].get("first_seen", "Unknown"),
+                "last_seen": vt_results[domain].get("last_seen", "Unknown")
+            }
+    
+    # 3. Process IP information
+    for ip in indicators.ips + indicators.internal_ips + indicators.external_ips:
+        if ip not in enhanced_context["ips"]:
+            enhanced_context["ips"][ip]["mentions"] = 0
+            enhanced_context["ips"][ip]["connected_hosts"] = set()
+            enhanced_context["ips"][ip]["connected_users"] = set()
+            enhanced_context["ips"][ip]["connected_domains"] = set()
+            enhanced_context["ips"][ip]["seen_at"] = []
+            enhanced_context["ips"][ip]["activities"] = set()
+    
+    # 4. Process log data to enrich entities with relationship information
+    for log in logs:
+        # Extract entities from log
+        timestamp = log.get("TimeGenerated", log.get("timestamp", "Unknown"))
+        device = log.get("Computer", log.get("DeviceName", log.get("HostName", "Unknown")))
+        user = log.get("User", log.get("UserName", log.get("UserId", "Unknown")))
+        source_ip = log.get("SourceIP", log.get("src_ip", log.get("source_ip", None)))
+        dest_ip = log.get("DestinationIP", log.get("dst_ip", log.get("destination_ip", None)))
+        domain = log.get("Domain", log.get("DomainName", log.get("domain", None)))
+        action = log.get("Action", log.get("DeviceAction", "Unknown"))
+        
+        # Update host information
+        if device and device != "Unknown":
+            if device not in enhanced_context["hosts"]:
+                enhanced_context["hosts"][device] = {
+                    "mentions": 0,
+                    "users": set(),
+                    "ips": set(),
+                    "domains": set(),
+                    "activities": set(),
+                    "timestamps": []
+                }
+            enhanced_context["hosts"][device]["mentions"] += 1
+            if timestamp and timestamp != "Unknown":
+                enhanced_context["hosts"][device]["timestamps"].append(timestamp)
+            if user and user != "Unknown":
+                enhanced_context["hosts"][device]["users"].add(user)
+            if source_ip:
+                enhanced_context["hosts"][device]["ips"].add(source_ip)
+            if dest_ip:
+                enhanced_context["hosts"][device]["ips"].add(dest_ip)
+            if domain:
+                enhanced_context["hosts"][device]["domains"].add(domain)
+            if action and action != "Unknown":
+                enhanced_context["hosts"][device]["activities"].add(action)
+        
+        # Update user information
+        if user and user != "Unknown":
+            if user not in enhanced_context["users"]:
+                enhanced_context["users"][user] = {
+                    "mentions": 0,
+                    "hosts": set(),
+                    "ips": set(),
+                    "domains": set(),
+                    "activities": set(),
+                    "timestamps": []
+                }
+            enhanced_context["users"][user]["mentions"] += 1
+            if timestamp and timestamp != "Unknown":
+                enhanced_context["users"][user]["timestamps"].append(timestamp)
+            if device and device != "Unknown":
+                enhanced_context["users"][user]["hosts"].add(device)
+            if source_ip:
+                enhanced_context["users"][user]["ips"].add(source_ip)
+            if dest_ip:
+                enhanced_context["users"][user]["ips"].add(dest_ip)
+            if domain:
+                enhanced_context["users"][user]["domains"].add(domain)
+            if action and action != "Unknown":
+                enhanced_context["users"][user]["activities"].add(action)
+        
+        # Update domain information
+        if domain and domain in enhanced_context["domains"]:
+            enhanced_context["domains"][domain]["mentions"] += 1
+            if device and device != "Unknown":
+                enhanced_context["domains"][domain]["connected_hosts"].add(device)
+            if user and user != "Unknown":
+                enhanced_context["domains"][domain]["connected_users"].add(user)
+            if timestamp and timestamp != "Unknown":
+                enhanced_context["domains"][domain]["seen_at"].append(timestamp)
+        
+        # --- START ENHANCED DOMAIN-USER LINKING ---
+        # Check other relevant fields for domain presence and link user if found in the same log
+        potential_domain_fields = [
+            log.get("DestinationHostName"),
+            log.get("RequestURL")
+            # Add other fields if necessary, e.g., fields containing URLs
+        ]
+
+        # Normalize target domains for comparison
+        target_domains_lower = {d.lower() for d in indicators.domains}
+
+        for field_value in potential_domain_fields:
+            if field_value and isinstance(field_value, str):
+                # Basic normalization: lower case, handle potential URLs
+                normalized_field_value = field_value.lower()
+                # Attempt to extract domain from URL if it looks like one
+                if "://" in normalized_field_value:
+                    try:
+                        from urllib.parse import urlparse
+                        parsed_url = urlparse(field_value) # Use original case for parsing potentially
+                        normalized_domain_from_url = parsed_url.netloc.lower()
+                        if normalized_domain_from_url in target_domains_lower:
+                             # Found a target domain in URL, check for user in this log
+                             if user and user != "Unknown":
+                                 # Add user to the set for the matched target domain
+                                 target_domain_original_case = next((d for d in indicators.domains if d.lower() == normalized_domain_from_url), normalized_domain_from_url)
+                                 enhanced_context["domains"][target_domain_original_case]["connected_users"].add(user)
+                                 # print(f"DEBUG: Linked user '{user}' to domain '{target_domain_original_case}' via URL field") # Optional debug
+                    except Exception:
+                         pass # Ignore parsing errors
+                else:
+                     # Treat as hostname/domain
+                     normalized_domain = normalized_field_value.strip().rstrip('.')
+                     if normalized_domain in target_domains_lower:
+                          # Found a target domain in hostname field, check for user in this log
+                          if user and user != "Unknown":
+                              # Add user to the set for the matched target domain
+                              target_domain_original_case = next((d for d in indicators.domains if d.lower() == normalized_domain), normalized_domain)
+                              enhanced_context["domains"][target_domain_original_case]["connected_users"].add(user)
+                              # print(f"DEBUG: Linked user '{user}' to domain '{target_domain_original_case}' via HostName/Domain field") # Optional debug
+        # --- END ENHANCED DOMAIN-USER LINKING ---
+
+        # Update IP information
+        for ip in [source_ip, dest_ip]:
+            if ip and ip in enhanced_context["ips"]:
+                enhanced_context["ips"][ip]["mentions"] += 1
+                if device and device != "Unknown":
+                    enhanced_context["ips"][ip]["connected_hosts"].add(device)
+                if user and user != "Unknown":
+                    enhanced_context["ips"][ip]["connected_users"].add(user)
+                if domain:
+                    enhanced_context["ips"][ip]["connected_domains"].add(domain)
+                if timestamp and timestamp != "Unknown":
+                    enhanced_context["ips"][ip]["seen_at"].append(timestamp)
+                if action and action != "Unknown":
+                    enhanced_context["ips"][ip]["activities"].add(action)
+    
+    # 5. Process alert information
+    if alerts:
+        for alert in alerts:
+            alert_summary = {
+                "title": alert.get("alertDisplayName", "Unknown Alert"),
+                "severity": alert.get("severity", "Unknown"),
+                "description": alert.get("description", "No description"),
+                "entities": [],
+                "timestamp": alert.get("timeGenerated", "Unknown")
+            }
+            
+            # Extract entities from alert
+            for entity in alert.get("entities", []):
+                entity_type = entity.get("type", "unknown")
+                entity_name = entity.get("displayName", "Unknown")
+                
+                # Add to alert summary
+                alert_summary["entities"].append({
+                    "type": entity_type,
+                    "name": entity_name
+                })
+                
+                # Update entity information based on alert
+                if entity_type == "host" and entity_name in enhanced_context["hosts"]:
+                    if "alerts" not in enhanced_context["hosts"][entity_name]:
+                        enhanced_context["hosts"][entity_name]["alerts"] = []
+                    enhanced_context["hosts"][entity_name]["alerts"].append(alert_summary["title"])
+                
+                elif entity_type == "account" and entity_name in enhanced_context["users"]:
+                    if "alerts" not in enhanced_context["users"][entity_name]:
+                        enhanced_context["users"][entity_name]["alerts"] = []
+                    enhanced_context["users"][entity_name]["alerts"].append(alert_summary["title"])
+                
+                elif entity_type == "ip" and entity_name in enhanced_context["ips"]:
+                    if "alerts" not in enhanced_context["ips"][entity_name]:
+                        enhanced_context["ips"][entity_name]["alerts"] = []
+                    enhanced_context["ips"][entity_name]["alerts"].append(alert_summary["title"])
+                
+                elif entity_type == "dns" and entity_name in enhanced_context["domains"]:
+                    if "alerts" not in enhanced_context["domains"][entity_name]:
+                        enhanced_context["domains"][entity_name]["alerts"] = []
+                    enhanced_context["domains"][entity_name]["alerts"].append(alert_summary["title"])
+            
+            enhanced_context["alerts"].append(alert_summary)
+    
+    # 6. Add log patterns
+    if logs:
+        log_patterns = analyze_log_patterns(logs)
+        enhanced_context["patterns"] = log_patterns
+    
+    # 7. Convert sets to lists for JSON serialization
+    for domain, data in enhanced_context["domains"].items():
+        if "connected_hosts" in data:
+            data["connected_hosts"] = list(data["connected_hosts"])
+        if "connected_users" in data:
+            data["connected_users"] = list(data["connected_users"])
+    
+    for ip, data in enhanced_context["ips"].items():
+        if "connected_hosts" in data:
+            data["connected_hosts"] = list(data["connected_hosts"])
+        if "connected_users" in data:
+            data["connected_users"] = list(data["connected_users"])
+        if "connected_domains" in data:
+            data["connected_domains"] = list(data["connected_domains"])
+        if "activities" in data:
+            data["activities"] = list(data["activities"])
+    
+    for host, data in enhanced_context["hosts"].items():
+        if "users" in data:
+            data["users"] = list(data["users"])
+        if "ips" in data:
+            data["ips"] = list(data["ips"])
+        if "domains" in data:
+            data["domains"] = list(data["domains"])
+        if "activities" in data:
+            data["activities"] = list(data["activities"])
+    
+    for user, data in enhanced_context["users"].items():
+        if "hosts" in data:
+            data["hosts"] = list(data["hosts"])
+        if "ips" in data:
+            data["ips"] = list(data["ips"])
+        if "domains" in data:
+            data["domains"] = list(data["domains"])
+        if "activities" in data:
+            data["activities"] = list(data["activities"])
+    
+    return enhanced_context
+
+def format_enhanced_rag_context(enhanced_context: Dict[str, Dict[str, Any]]) -> str:
+    """
+    Format the enhanced RAG context into a structured text format for LLM consumption.
+    Organizes information by entity with rich relationship context.
+    """
+    formatted_sections = []
+    
+    # 1. Incident Overview
+    if enhanced_context.get("incident"):
+        incident_section = ["=== INCIDENT OVERVIEW ==="]
+        for k, v in enhanced_context["incident"].items():
+            incident_section.append(f"{k}: {v}")
+        formatted_sections.append("\n".join(incident_section))
+    
+    # 2. Domain Context with Evidence
+    if enhanced_context.get("domains"):
+        domains_section = ["=== DOMAIN CONTEXT ==="]
+        for domain, data in enhanced_context["domains"].items():
+            domain_info = [f"Domain: {domain}"]
+            
+            # Add VirusTotal information if available
+            if "virustotal" in data:
+                vt = data["virustotal"]
+                domain_info.append(f"Malicious Score: {vt.get('malicious_score', 'Unknown')}")
+                if vt.get("categories"):
+                    domain_info.append(f"Categories: {', '.join(vt.get('categories', []))}")
+                if vt.get("detection_names"):
+                    domain_info.append(f"Detection Names: {', '.join(vt.get('detection_names', []))}")
+                if vt.get("first_seen") != "Unknown":
+                    domain_info.append(f"First Seen: {vt.get('first_seen', 'Unknown')}")
+            
+            # Add relationship information
+            if data.get("mentions", 0) > 0:
+                domain_info.append(f"Mentions in Logs: {data.get('mentions', 0)}")
+            if data.get("connected_hosts"):
+                domain_info.append(f"Connected Systems: {', '.join(data.get('connected_hosts', []))}")
+            if data.get("connected_users"):
+                domain_info.append(f"Users Who Accessed: {', '.join(data.get('connected_users', []))}")
+            if data.get("alerts"):
+                domain_info.append(f"Associated Alerts: {', '.join(data.get('alerts', []))}")
+            
+            domains_section.append("\n".join(domain_info) + "\n")
+        
+        formatted_sections.append("\n".join(domains_section))
+    
+    # 3. Host/System Context
+    if enhanced_context.get("hosts"):
+        hosts_section = ["=== SYSTEM CONTEXT ==="]
+        for host, data in enhanced_context["hosts"].items():
+            if data.get("mentions", 0) > 0:  # Only include hosts with relevant data
+                host_info = [f"System: {host}"]
+                host_info.append(f"Mentions in Logs: {data.get('mentions', 0)}")
+                
+                if data.get("users"):
+                    host_info.append(f"Associated Users: {', '.join(data.get('users', []))}")
+                if data.get("domains"):
+                    host_info.append(f"Contacted Domains: {', '.join(data.get('domains', []))}")
+                if data.get("ips"):
+                    host_info.append(f"Connected IPs: {', '.join(data.get('ips', []))}")
+                if data.get("activities"):
+                    host_info.append(f"Observed Activities: {', '.join(data.get('activities', []))}")
+                if data.get("alerts"):
+                    host_info.append(f"Associated Alerts: {', '.join(data.get('alerts', []))}")
+                
+                # Add timeline info if available
+                if data.get("timestamps") and len(data["timestamps"]) >= 2:
+                    earliest = min(data["timestamps"])
+                    latest = max(data["timestamps"])
+                    host_info.append(f"Activity Timeframe: {earliest} to {latest}")
+                
+                hosts_section.append("\n".join(host_info) + "\n")
+        
+        formatted_sections.append("\n".join(hosts_section))
+    
+    # 4. User Context
+    if enhanced_context.get("users"):
+        users_section = ["=== USER CONTEXT ==="]
+        for user, data in enhanced_context["users"].items():
+            if data.get("mentions", 0) > 0:  # Only include users with relevant data
+                user_info = [f"User: {user}"]
+                user_info.append(f"Mentions in Logs: {data.get('mentions', 0)}")
+                
+                if data.get("hosts"):
+                    user_info.append(f"Systems Accessed: {', '.join(data.get('hosts', []))}")
+                if data.get("domains"):
+                    user_info.append(f"Domains Accessed: {', '.join(data.get('domains', []))}")
+                if data.get("ips"):
+                    user_info.append(f"Connected IPs: {', '.join(data.get('ips', []))}")
+                if data.get("activities"):
+                    user_info.append(f"Observed Activities: {', '.join(data.get('activities', []))}")
+                if data.get("alerts"):
+                    user_info.append(f"Associated Alerts: {', '.join(data.get('alerts', []))}")
+                
+                # Add timeline info if available
+                if data.get("timestamps") and len(data["timestamps"]) >= 2:
+                    earliest = min(data["timestamps"])
+                    latest = max(data["timestamps"])
+                    user_info.append(f"Activity Timeframe: {earliest} to {latest}")
+                
+                users_section.append("\n".join(user_info) + "\n")
+        
+        formatted_sections.append("\n".join(users_section))
+    
+    # 5. IP Address Context
+    if enhanced_context.get("ips"):
+        ips_section = ["=== IP ADDRESS CONTEXT ==="]
+        for ip, data in enhanced_context["ips"].items():
+            if data.get("mentions", 0) > 0:  # Only include IPs with relevant data
+                ip_info = [f"IP Address: {ip}"]
+                ip_info.append(f"Mentions in Logs: {data.get('mentions', 0)}")
+                
+                if data.get("connected_hosts"):
+                    ip_info.append(f"Connected Systems: {', '.join(data.get('connected_hosts', []))}")
+                if data.get("connected_users"):
+                    ip_info.append(f"Associated Users: {', '.join(data.get('connected_users', []))}")
+                if data.get("connected_domains"):
+                    ip_info.append(f"Related Domains: {', '.join(data.get('connected_domains', []))}")
+                if data.get("activities"):
+                    ip_info.append(f"Observed Activities: {', '.join(data.get('activities', []))}")
+                if data.get("alerts"):
+                    ip_info.append(f"Associated Alerts: {', '.join(data.get('alerts', []))}")
+                
+                # Add timeline info if available
+                if data.get("seen_at") and len(data["seen_at"]) >= 2:
+                    earliest = min(data["seen_at"])
+                    latest = max(data["seen_at"])
+                    ip_info.append(f"Activity Timeframe: {earliest} to {latest}")
+                
+                ips_section.append("\n".join(ip_info) + "\n")
+        
+        formatted_sections.append("\n".join(ips_section))
+    
+    # 6. Alert Summary
+    if enhanced_context.get("alerts"):
+        alerts_section = ["=== ALERT SUMMARY ==="]
+        for alert in enhanced_context["alerts"]:
+            alert_info = [
+                f"Alert: {alert.get('title', 'Unknown')}",
+                f"Severity: {alert.get('severity', 'Unknown')}",
+                f"Time: {alert.get('timestamp', 'Unknown')}",
+                f"Description: {alert.get('description', 'No description')}"
+            ]
+            
+            if alert.get("entities"):
+                entities = [f"{e.get('type', 'unknown')}: {e.get('name', 'Unknown')}" for e in alert.get("entities", [])]
+                alert_info.append(f"Entities: {', '.join(entities)}")
+            
+            alerts_section.append("\n".join(alert_info) + "\n")
+        
+        formatted_sections.append("\n".join(alerts_section))
+    
+    # 7. Log Patterns
+    if enhanced_context.get("patterns"):
+        patterns_section = ["=== LOG PATTERNS ==="]
+        for pattern_type, pattern_data in enhanced_context["patterns"].items():
+            patterns_section.append(f"Pattern Type: {pattern_type}")
+            for entity, stats in pattern_data.items():
+                if isinstance(stats, dict):
+                    patterns_section.append(f"  {entity}: {stats.get('count', 0)} occurrences")
+                    if stats.get("details"):
+                        for detail in stats.get("details", [])[:3]:  # Limit to top 3 details
+                            patterns_section.append(f"    - {detail}")
+        
+        formatted_sections.append("\n".join(patterns_section))
+    
+    return "\n\n".join(formatted_sections)
+
+def convert_fallbacks_to_narrative_format(actions):
+    """Convert dictionary-style fallbacks to narrative string format"""
+    if not actions:
+        return []
+        
+    # If already string format, return as is
+    if isinstance(actions[0], str):
+        return actions
+        
+    # Convert from dict format to string format
+    result = []
+    for action in actions:
+        if isinstance(action, dict):
+            # Get description
+            description = action.get('description', '')
+            if not description:
+                continue
+                
+            # Add to result
+            result.append(description)
+    
+    return result
 
 if __name__ == "__main__":
     import argparse
